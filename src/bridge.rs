@@ -18,7 +18,7 @@ use mod_eternity_world_map::entities::{
     EntityCategory, MobPart, OverlaySource, RadarEntity, mob_model_spec, normalize_species,
 };
 use mod_eternity_world_map::state::{
-    ActivePanel, ModalField, PendingCommand, PreloadState, state,
+    ActivePanel, ModalField, PendingCommand, PreloadState, resolve_world_key, state,
 };
 use mod_eternity_world_map::terrain::{
     BiomeColors, BlockLook, CaveMode, ColumnCell, TintMode, apply_biome_tint, scan_cave_column,
@@ -677,13 +677,10 @@ pub fn on_extras_frame(game: &mut Game<'_>) {
         rt.cave_scanned_ptrs.clear();
     }
 
-    let world_key = if let Some(remote) = &game.remote {
-        format!("srv_{}", remote.session.address)
-    } else if let Some(integ) = &game.integrated {
-        format!("sp_{}", integ.save_folder)
-    } else {
-        "local".to_owned()
-    };
+    let world_key = resolve_world_key(
+        game.integrated.as_ref().map(|integ| integ.save_folder.as_str()),
+        game.remote.as_ref().map(|remote| remote.session.address.as_str()),
+    );
     let dim_id = game.dim.id().to_owned();
 
     rt.frame_count = rt.frame_count.wrapping_add(1);

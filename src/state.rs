@@ -16,6 +16,23 @@ pub const DEFAULT_MINIMAP_ZOOM: f32 = 0.58;
 pub const MIN_MINIMAP_SIZE: f32 = 64.0;
 pub const MAX_MINIMAP_SIZE: f32 = 256.0;
 
+/// Compute the persistent storage key for the active world.
+///
+/// Integrated single-player worlds must take precedence over `remote_address` because
+/// Horizon connects local single-player clients over an in-memory session (`address == "local"`).
+pub fn resolve_world_key(
+    integrated_save_folder: Option<&str>,
+    remote_address: Option<&str>,
+) -> String {
+    if let Some(folder) = integrated_save_folder.filter(|s| !s.is_empty()) {
+        format!("sp_{folder}")
+    } else if let Some(addr) = remote_address.filter(|s| !s.is_empty()) {
+        format!("srv_{addr}")
+    } else {
+        "local".to_owned()
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct ModConfig {
     pub enabled: bool,

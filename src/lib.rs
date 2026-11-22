@@ -24,19 +24,35 @@ pub const MOD_ID: &str = "eternity_world_map";
 #[derive(Default)]
 pub struct Mod;
 
+fn fnv1a_32(bytes: &[u8]) -> u32 {
+    let mut hash = 0x811c_9dc5u32;
+    for &b in bytes {
+        hash ^= u32::from(b);
+        hash = hash.wrapping_mul(0x0100_0193);
+    }
+    hash
+}
+
 fn sanitize_path_token(s: &str) -> String {
-    let mut out = String::with_capacity(s.len().min(48));
-    for c in s.chars().take(48) {
-        if c.is_ascii_alphanumeric() || c == '_' || c == '-' {
-            out.push(c);
-        } else {
-            out.push('_');
+    let mut prefix = String::with_capacity(s.len().min(48));
+    let mut needs_hash = false;
+    for (i, c) in s.chars().enumerate() {
+        let safe = c.is_ascii_alphanumeric() || c == '_' || c == '-';
+        if !safe || i >= 48 {
+            needs_hash = true;
+        }
+        if i < 48 {
+            prefix.push(if safe { c } else { '_' });
         }
     }
-    if out.is_empty() {
-        "default".to_owned()
+    if prefix.is_empty() {
+        return "default".to_owned();
+    }
+    if needs_hash {
+        let trimmed: String = prefix.chars().take(39).collect();
+        format!("{trimmed}_{:08x}", fnv1a_32(s.as_bytes()))
     } else {
-        out
+        prefix
     }
 }
 
@@ -533,6 +549,7 @@ impl Hooks for Mod {
 
 #[cfg(test)]
 mod tests {
+    use crate::sanitize_path_token;
     use crate::atlas_cache::{BiomeTable, RegionBuffer, SLOT_INNER, SLOT_STRIDE, TerrainStore, TileKey};
     use crate::entities::{OverlaySource, mob_face_spec, mob_model_spec, normalize_species};
     use crate::state::{EternityMapState, ModConfig};
@@ -783,6 +800,33 @@ mod tests {
         assert_eq!(em.active_parts()[0].source, OverlaySource::EndermanEyes);
         assert_eq!(mob_model_spec("minecraft:bat", 32, 32).base.py, 8);
         assert_eq!(mob_model_spec("minecraft:nautilus", 128, 128).active_parts().len(), 3);
+    }
+
+    #[test]
+    fn world_key_and_path_sanitization_isolate_singleplayer_worlds() {
+        use crate::state::resolve_world_key;
+
+        // Horizon sets remote.session.address = "local" alongside game.integrated in singleplayer.
+        let sp_a = resolve_world_key(Some("world_alpha"), Some("local"));
+        let sp_b = resolve_world_key(Some("world_beta"), Some("local"));
+        assert_eq!(sp_a, "sp_world_alpha");
+        assert_eq!(sp_b, "sp_world_beta");
+        assert_ne!(sp_a, sp_b);
+
+        assert_eq!(
+            resolve_world_key(None, Some("play.example.com:25565")),
+            "srv_play.example.com:25565"
+        );
+        assert_eq!(resolve_world_key(Some(""), Some("local")), "srv_local");
+        assert_eq!(resolve_world_key(None, None), "local");
+
+        assert_eq!(sanitize_path_token("sp_ascii_world-1"), "sp_ascii_world-1");
+        let uni_a = sanitize_path_token("sp_Новый мир 1");
+        let uni_b = sanitize_path_token("sp_Второй м 2");
+        let uni_c = sanitize_path_token("sp_Новый мир 2");
+        assert_ne!(uni_a, uni_b);
+        assert_ne!(uni_a, uni_c);
+        assert!(uni_a.len() <= 48);
     }
 }
 
