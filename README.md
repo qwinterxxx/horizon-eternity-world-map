@@ -12,7 +12,8 @@ Zero-overhead native minimap, persistent fullscreen World Map, Cave Mode, 2.5D m
   - Zero-allocation LRU GPU tile atlas cache (`1024x1024`) with budgeted incremental chunk scanning.
 - **Persistent Fullscreen World Map (`M`)**
   - Multi-tier mip-pyramid (`1:1`, `2:1`, `4:1`, `8:1`) prevents zoom-out shimmering and blur.
-  - Background `512x512` area preload/scan button, chunk grid overlay, cursor biome & coordinate readout, and right-click context actions (`Teleport`, `Copy coords`, `Create waypoint`).
+  - Background `512x512` area preload/scan button: in single-player (integrated server), samples local `VanillaTerrain` LOD generation to **reveal unexplored terrain** around the selected center before you walk there; on multiplayer servers, rescans loaded client chunks.
+  - Chunk grid overlay, cursor biome & coordinate readout, and right-click context actions (`Teleport Here` sends a standard `/tp <x> <y> <z>` chat command when clicked, `Copy coords`, `Create waypoint`). All passive map, radar, and waypoint rendering stays client-side and read-only with zero external network access.
 - **Cave Mode**
   - Automatic surface/roof detection plus a World Map switcher (`Auto` / `Manual` / `Off` and Y-slice slider `-64..320`), filtering open sky above the cave ceiling so surface terrain never bleeds in.
 - **2.5D Mob & Player Radar**
@@ -45,10 +46,10 @@ cargo test --lib
 horizon-launcher native-build --instance "<instance>" --trust-native-code
 ```
 
-Or download `eternity_world_map-0.1.0.hmod` from [Releases](https://github.com/qwinterxxx/eternity-world-map/releases) and verify its signature with [`horizon-mods.pub`](horizon-mods.pub):
+Or download `eternity_world_map-0.1.1.hmod` from [Releases](https://github.com/qwinterxxx/horizon-eternity-world-map/releases) and verify its signature with [`horizon-mods.pub`](horizon-mods.pub):
 
 ```sh
-minisign -Vm eternity_world_map-0.1.0.hmod -P RWQjqg8rypRO1FcAIBc+P7vxdFaU1fjCss8evaMaYSBDL21Fy12PGnH8
+minisign -Vm eternity_world_map-0.1.1.hmod -P RWQjqg8rypRO1FcAIBc+P7vxdFaU1fjCss8evaMaYSBDL21Fy12PGnH8
 ```
 
 ## License

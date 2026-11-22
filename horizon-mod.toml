@@ -1,6 +1,6 @@
 id = "eternity_world_map"
 name = "Eternity world map"
-version = "0.1.0"
+version = "0.1.1"
 description = "Zero-overhead native minimap, persistent fullscreen world map (M), Cave Mode, mob radar, and 3D waypoints."
 authors = ["qwinterx"]
 license = "MIT"
