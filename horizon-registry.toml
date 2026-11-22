@@ -1,0 +1,15 @@
+name = "Eternity world map"
+summary = "Zero-overhead native minimap, persistent fullscreen World Map (M), Cave Mode, 2.5D mob radar, and 3D waypoints."
+description = """
+Zero-overhead native minimap, persistent fullscreen World Map, Cave Mode, 2.5D mob head radar, and interactive 3D/radar waypoints written in Rust for Horizon (Minecraft `26.3`).
+
+- **Minimap HUD**: Square and smooth Round shapes, adjustable size (`64–256 px`), zoom, corner placement, and player rotation lock.
+- **Fullscreen World Map (`M`)**: Multi-tier mip-pyramid (`1:1`, `2:1`, `4:1`, `8:1`) prevents zoom-out blur, background `512x512` scan button, chunk grid, biome/coordinate cursor readout, and context actions (`/tp`, copy coordinates, create waypoint).
+- **Cave Mode**: Auto/Manual/Off switcher with Y-slice slider (`-64..320`), pure black void outside caves, and roof-verified scanning so open-sky terrain never bleeds in.
+- **2.5D Mob Radar**: Compact diamonds by default; hold `Tab` to show layered vanilla mob heads (snouts, beaks, noses, ears, horns, emissive eye overlays, and baby sizing) plus player skins.
+- **Waypoints**: Click any coordinate on the World Map or press `B` to create named color waypoints with in-world 3D beams, minimap rim clamping, and optional Death waypoints.
+
+Pinned to Horizon Nightly `2026-11-20` (`0a875da91dbb0fdcb7ba8c42c11341aa229af51a`) and `horizon-mixins` `e59da9094f0c2fdda6c627fe9eff22dec6a906f0`.
+"""
+authors = ["qwinterx"]
+license = "MIT"
