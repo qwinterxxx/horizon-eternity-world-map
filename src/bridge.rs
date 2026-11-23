@@ -697,7 +697,27 @@ pub fn on_extras_frame(game: &mut Game<'_>) {
         game.integrated.as_ref().map(|integ| integ.save_folder.as_str()),
         game.remote.as_ref().map(|remote| remote.session.address.as_str()),
     );
-    let dim_id = game.dim.id().to_owned();
+    let raw_dim_id = game.dim.id().to_owned();
+    let (px, py, pz, eye_h, yaw_deg, pitch_deg, valid_player) = match &game.player {
+        Some(p) => (
+            p.position.x,
+            p.position.y,
+            p.position.z,
+            p.dimensions.eye_height as f64,
+            game.yaw,
+            game.pitch,
+            true,
+        ),
+        None => (0.0, 64.0, 0.0, 1.62, 0.0, 0.0, false),
+    };
+    let on_nether_roof =
+        game.world.shape.has_ceiling && valid_player && py >= (game.world.shape.min_y as f64 + 126.0);
+    // Keep Nether roof in a separate region layer so roof scans never overwrite lower-Nether map data.
+    let dim_id = if on_nether_roof {
+        format!("{raw_dim_id}#roof")
+    } else {
+        raw_dim_id.clone()
+    };
 
     rt.frame_count = rt.frame_count.wrapping_add(1);
     ICON_FRAME.store(rt.frame_count, Ordering::Relaxed);
@@ -728,18 +748,6 @@ pub fn on_extras_frame(game: &mut Game<'_>) {
         None
     };
 
-    let (px, py, pz, eye_h, yaw_deg, pitch_deg, valid_player) = match &game.player {
-        Some(p) => (
-            p.position.x,
-            p.position.y,
-            p.position.z,
-            p.dimensions.eye_height as f64,
-            game.yaw,
-            game.pitch,
-            true,
-        ),
-        None => (0.0, 64.0, 0.0, 1.62, 0.0, 0.0, false),
-    };
     let fov_deg = if valid_player {
         game.fov_degrees(0.0, [px, py + eye_h, pz])
     } else {
@@ -747,9 +755,6 @@ pub fn on_extras_frame(game: &mut Game<'_>) {
     };
 
     // Determine whether player stands under a ceiling (for CaveMode::Auto).
-    // On the Nether roof (y >= min_y + 126), the player has open sky above them unless inside a roof build.
-    let on_nether_roof =
-        game.world.shape.has_ceiling && valid_player && py >= (game.world.shape.min_y as f64 + 126.0);
     if rt.last_on_nether_roof != on_nether_roof {
         rt.last_on_nether_roof = on_nether_roof;
         rt.scanned_chunk_ptrs.clear();
@@ -918,24 +923,39 @@ pub fn on_extras_frame(game: &mut Game<'_>) {
         if !st.terrain.world_key.is_empty()
             && (st.terrain.world_key != world_key || st.terrain.dimension != dim_id)
         {
-            let old_wkey = mod_eternity_world_map::sanitize_path_token(&st.terrain.world_key);
-            let old_dkey = mod_eternity_world_map::sanitize_path_token(&st.terrain.dimension);
-            let mut to_save = Vec::new();
-            for (&(rx, rz), reg) in st.terrain.regions.iter_mut() {
-                if reg.dirty_to_disk {
-                    reg.dirty_to_disk = false;
-                    to_save.push((
-                        format!("regions/{old_wkey}/{old_dkey}/r_{rx}_{rz}.bin"),
-                        reg.encode(),
-                    ));
+            let old_world = st.terrain.world_key.clone();
+            let old_dim = st.terrain.dimension.clone();
+            let same_loaded = st.loaded_regions_key.0 == old_world && st.loaded_regions_key.1 == old_dim;
+            let mut to_flush = Vec::new();
+            let dirty_coords: Vec<(i32, i32)> = st
+                .terrain
+                .regions
+                .iter()
+                .filter(|(_, r)| r.dirty_to_disk)
+                .map(|(&c, _)| c)
+                .collect();
+            for (rx, rz) in dirty_coords {
+                let merged_with_disk = same_loaded && st.loaded_regions.contains(&(rx, rz));
+                if let Some(reg) = st.terrain.regions.get_mut(&(rx, rz)) {
+                    let moved = std::mem::replace(
+                        reg,
+                        mod_eternity_world_map::atlas_cache::RegionBuffer::new_empty(),
+                    );
+                    to_flush.push(mod_eternity_world_map::state::PendingRegionFlush {
+                        world_key: old_world.clone(),
+                        dimension: old_dim.clone(),
+                        rx,
+                        rz,
+                        region: moved,
+                        merged_with_disk,
+                    });
                 }
             }
-            st.pending_disk_writes.extend(to_save);
+            st.pending_region_flushes.extend(to_flush);
             if st.biomes_dirty {
                 st.biomes_dirty = false;
-                let b_bytes = st.terrain.biomes.encode();
-                st.pending_disk_writes
-                    .push((format!("biomes/{old_wkey}.bin"), b_bytes));
+                let biomes = st.terrain.biomes.clone();
+                st.pending_biome_flushes.push((old_world, biomes));
             }
         }
         st.terrain.switch_world_dim(world_key.clone(), dim_id.clone());
@@ -1060,7 +1080,7 @@ pub fn on_extras_frame(game: &mut Game<'_>) {
                     prev.cancel.store(true, Ordering::Relaxed);
                 }
                 if let Some(integ) = &game.integrated
-                    && let Some(terrain) = integ.terrain(&dim_id)
+                    && let Some(terrain) = integ.terrain(&raw_dim_id)
                 {
                     let eng_biomes = game
                         .world_biomes

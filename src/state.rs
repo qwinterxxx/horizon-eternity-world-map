@@ -340,6 +340,15 @@ impl Default for PlayerSnapshot {
     }
 }
 
+pub struct PendingRegionFlush {
+    pub world_key: String,
+    pub dimension: String,
+    pub rx: i32,
+    pub rz: i32,
+    pub region: crate::atlas_cache::RegionBuffer,
+    pub merged_with_disk: bool,
+}
+
 pub struct EternityMapState {
     pub config: ModConfig,
     pub config_dirty: bool,
@@ -353,7 +362,8 @@ pub struct EternityMapState {
     pub biomes_dirty: bool,
     pub loaded_regions: HashSet<(i32, i32)>,
     pub loaded_regions_key: (String, String),
-    pub pending_disk_writes: Vec<(String, Vec<u8>)>,
+    pub pending_region_flushes: Vec<PendingRegionFlush>,
+    pub pending_biome_flushes: Vec<(String, crate::atlas_cache::BiomeTable)>,
     pub player: PlayerSnapshot,
     pub entities: Vec<RadarEntity>,
     pub map: WorldMapUi,
@@ -385,7 +395,8 @@ impl EternityMapState {
             biomes_dirty: false,
             loaded_regions: HashSet::new(),
             loaded_regions_key: (String::new(), String::new()),
-            pending_disk_writes: Vec::new(),
+            pending_region_flushes: Vec::new(),
+            pending_biome_flushes: Vec::new(),
             player: PlayerSnapshot::default(),
             entities: Vec::new(),
             map: WorldMapUi::default(),

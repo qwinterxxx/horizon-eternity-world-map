@@ -57,8 +57,19 @@ pub fn sanitize_path_token(s: &str) -> String {
     }
 }
 
-/// Legacy v0.1.0 path sanitizer (no hash suffix) used as read-only fallback so existing
-/// v0.1.0 server/world maps migrate seamlessly on load.
+fn read_data_file(files: &dyn ConfigFiles, path: &str) -> Option<Vec<u8>> {
+    let cp = ConfigPath::new(path).ok()?;
+    files.read(&cp).ok()
+}
+
+fn write_data_file(files: &dyn ConfigFiles, path: &str, bytes: &[u8]) -> bool {
+    ConfigPath::new(path)
+        .ok()
+        .is_some_and(|cp| files.write(&cp, bytes).is_ok())
+}
+
+/// Legacy v0.1.0 path sanitizer (no hash suffix). Never used automatically unless an
+/// accompanying identity file matches the exact `world_key` / `dimension` string.
 fn sanitize_path_token_legacy(s: &str) -> String {
     let out: String = s
         .chars()
@@ -78,15 +89,100 @@ fn sanitize_path_token_legacy(s: &str) -> String {
     }
 }
 
-fn read_data_file(files: &dyn ConfigFiles, path: &str) -> Option<Vec<u8>> {
-    let cp = ConfigPath::new(path).ok()?;
-    files.read(&cp).ok()
+fn legacy_identity_matches(
+    files: &dyn ConfigFiles,
+    legacy_wkey: &str,
+    world_key: &str,
+    legacy_dkey: Option<&str>,
+    dimension: Option<&str>,
+) -> bool {
+    let world_ok = read_data_file(files, &format!("identities/{legacy_wkey}.txt"))
+        .is_some_and(|b| b == world_key.as_bytes());
+    if !world_ok {
+        return false;
+    }
+    if let (Some(ld), Some(dim)) = (legacy_dkey, dimension) {
+        read_data_file(files, &format!("identities/{legacy_wkey}__{ld}.txt"))
+            .is_some_and(|b| b == dim.as_bytes())
+    } else {
+        true
+    }
 }
 
-fn write_data_file(files: &dyn ConfigFiles, path: &str, bytes: &[u8]) {
-    if let Ok(cp) = ConfigPath::new(path) {
-        let _ = files.write(&cp, bytes);
+/// Merge a dirty region with any existing on-disk data for `(rx, rz)` if not yet loaded,
+/// then write to disk. Retains `reg.dirty_to_disk = true` if the write fails.
+fn flush_region_safely(
+    files: &dyn ConfigFiles,
+    wkey: &str,
+    dkey: &str,
+    rx: i32,
+    rz: i32,
+    reg: &mut RegionBuffer,
+    already_merged: bool,
+) -> bool {
+    let path = format!("regions/{wkey}/{dkey}/r_{rx}_{rz}.bin");
+    if !already_merged
+        && let Some(bytes) = read_data_file(files, &path)
+        && let Some(disk_reg) = RegionBuffer::decode(&bytes)
+    {
+        reg.merge_unexplored_from(&disk_reg);
     }
+    let encoded = reg.encode();
+    if write_data_file(files, &path, &encoded) {
+        reg.dirty_to_disk = false;
+        true
+    } else {
+        reg.dirty_to_disk = true;
+        false
+    }
+}
+
+/// Explicitly migrate unverified legacy (`0.1.0`) biome, waypoint, and region files into the
+/// current hashed `world_key` storage when a user opts in.
+pub fn migrate_legacy_world_data(
+    files: &dyn ConfigFiles,
+    legacy_world_key: &str,
+    target_world_key: &str,
+    dimensions: &[&str],
+    region_coords: &[(i32, i32)],
+) -> bool {
+    let src_w = sanitize_path_token_legacy(legacy_world_key);
+    let dst_w = sanitize_path_token(target_world_key);
+    let mut migrated = false;
+    if let Some(bytes) = read_data_file(files, &format!("biomes/{src_w}.bin"))
+        && read_data_file(files, &format!("biomes/{dst_w}.bin")).is_none()
+        && write_data_file(files, &format!("biomes/{dst_w}.bin"), &bytes)
+    {
+        migrated = true;
+    }
+    if let Some(bytes) = read_data_file(files, &format!("waypoints/{src_w}.bin"))
+        && read_data_file(files, &format!("waypoints/{dst_w}.bin")).is_none()
+        && write_data_file(files, &format!("waypoints/{dst_w}.bin"), &bytes)
+    {
+        migrated = true;
+    }
+    for &dim in dimensions {
+        let src_d = sanitize_path_token_legacy(dim);
+        let dst_d = sanitize_path_token(dim);
+        for &(rx, rz) in region_coords {
+            let src_p = format!("regions/{src_w}/{src_d}/r_{rx}_{rz}.bin");
+            let dst_p = format!("regions/{dst_w}/{dst_d}/r_{rx}_{rz}.bin");
+            if let Some(bytes) = read_data_file(files, &src_p)
+                && read_data_file(files, &dst_p).is_none()
+                && write_data_file(files, &dst_p, &bytes)
+            {
+                migrated = true;
+            }
+        }
+    }
+    if migrated {
+        write_data_file(
+            files,
+            &format!("identities/{dst_w}.txt"),
+            target_world_key.as_bytes(),
+        );
+    }
+    migrated
 }
 
 fn normalize_hook_key(key: &str) -> (&'static str, String) {
@@ -341,12 +437,57 @@ impl Hooks for Mod {
                 write_data_file(files, "config.bin", &encoded);
             }
 
-            // Flush any queued disk writes from a recent world/dimension switch immediately.
-            if !st.pending_disk_writes.is_empty() {
-                let queued = std::mem::take(&mut st.pending_disk_writes);
-                for (path, bytes) in queued {
-                    write_data_file(files, &path, &bytes);
+            // Flush any queued region/biome writes from a recent world/dimension switch,
+            // merging with disk before replacing and retaining any failed writes.
+            if !st.pending_region_flushes.is_empty() {
+                let mut queued = std::mem::take(&mut st.pending_region_flushes);
+                let mut failed = Vec::new();
+                for mut item in queued.drain(..) {
+                    let fw = sanitize_path_token(&item.world_key);
+                    let fd = sanitize_path_token(&item.dimension);
+                    if !flush_region_safely(
+                        files,
+                        &fw,
+                        &fd,
+                        item.rx,
+                        item.rz,
+                        &mut item.region,
+                        item.merged_with_disk,
+                    ) {
+                        item.merged_with_disk = true;
+                        failed.push(item);
+                    } else {
+                        let _ = write_data_file(
+                            files,
+                            &format!("identities/{fw}.txt"),
+                            item.world_key.as_bytes(),
+                        );
+                        let _ = write_data_file(
+                            files,
+                            &format!("identities/{fw}__{fd}.txt"),
+                            item.dimension.as_bytes(),
+                        );
+                    }
                 }
+                st.pending_region_flushes = failed;
+            }
+            if !st.pending_biome_flushes.is_empty() {
+                let queued = std::mem::take(&mut st.pending_biome_flushes);
+                let mut failed = Vec::new();
+                for (w_raw, tbl) in queued {
+                    let fw = sanitize_path_token(&w_raw);
+                    let bytes = tbl.encode();
+                    if !write_data_file(files, &format!("biomes/{fw}.bin"), &bytes) {
+                        failed.push((w_raw, tbl));
+                    } else {
+                        let _ = write_data_file(
+                            files,
+                            &format!("identities/{fw}.txt"),
+                            w_raw.as_bytes(),
+                        );
+                    }
+                }
+                st.pending_biome_flushes = failed;
             }
 
             let wkey = sanitize_path_token(&st.terrain.world_key);
@@ -370,7 +511,15 @@ impl Hooks for Mod {
                 st.biomes_loaded_world = st.terrain.world_key.clone();
                 let biome_bytes = read_data_file(files, &format!("biomes/{wkey}.bin"))
                     .or_else(|| {
-                        if wkey_legacy != wkey {
+                        if wkey_legacy != wkey
+                            && legacy_identity_matches(
+                                files,
+                                &wkey_legacy,
+                                &st.terrain.world_key,
+                                None,
+                                None,
+                            )
+                        {
                             read_data_file(files, &format!("biomes/{wkey_legacy}.bin"))
                         } else {
                             None
@@ -387,7 +536,15 @@ impl Hooks for Mod {
                 st.waypoints_loaded_world = st.terrain.world_key.clone();
                 let wp_bytes = read_data_file(files, &format!("waypoints/{wkey}.bin"))
                     .or_else(|| {
-                        if wkey_legacy != wkey {
+                        if wkey_legacy != wkey
+                            && legacy_identity_matches(
+                                files,
+                                &wkey_legacy,
+                                &st.terrain.world_key,
+                                None,
+                                None,
+                            )
+                        {
                             read_data_file(files, &format!("waypoints/{wkey_legacy}.bin"))
                         } else {
                             None
@@ -423,7 +580,15 @@ impl Hooks for Mod {
                         }
                         let path = format!("regions/{wkey}/{dkey}/r_{rx}_{rz}.bin");
                         let reg_bytes = read_data_file(files, &path).or_else(|| {
-                            if wkey_legacy != wkey || dkey_legacy != dkey {
+                            if (wkey_legacy != wkey || dkey_legacy != dkey)
+                                && legacy_identity_matches(
+                                    files,
+                                    &wkey_legacy,
+                                    &st.terrain.world_key,
+                                    Some(&dkey_legacy),
+                                    Some(&st.terrain.dimension),
+                                )
+                            {
                                 read_data_file(
                                     files,
                                     &format!("regions/{wkey_legacy}/{dkey_legacy}/r_{rx}_{rz}.bin"),
@@ -442,18 +607,31 @@ impl Hooks for Mod {
             }
 
             if valid_world && st.waypoints_dirty {
-                st.waypoints_dirty = false;
                 let bytes = encode_waypoints(&st.waypoints, st.next_waypoint_id);
-                write_data_file(files, &format!("waypoints/{wkey}.bin"), &bytes);
+                if write_data_file(files, &format!("waypoints/{wkey}.bin"), &bytes) {
+                    st.waypoints_dirty = false;
+                    let _ = write_data_file(
+                        files,
+                        &format!("identities/{wkey}.txt"),
+                        st.terrain.world_key.as_bytes(),
+                    );
+                }
             }
 
             if valid_world && st.biomes_dirty && (st.tick_counter % 20 == 0 || !st.player.valid) {
-                st.biomes_dirty = false;
                 let bytes = st.terrain.biomes.encode();
-                write_data_file(files, &format!("biomes/{wkey}.bin"), &bytes);
+                if write_data_file(files, &format!("biomes/{wkey}.bin"), &bytes) {
+                    st.biomes_dirty = false;
+                    let _ = write_data_file(
+                        files,
+                        &format!("identities/{wkey}.txt"),
+                        st.terrain.world_key.as_bytes(),
+                    );
+                }
             }
 
-            // Flush dirty regions in background (1 per 10 ticks while playing, or all on leave/disconnect).
+            // Flush dirty regions in background (1 per 10 ticks while playing, or all on leave/disconnect),
+            // merging any unvisited saved region first and retaining dirty_to_disk on write failure.
             if valid_world && (!st.player.valid || st.tick_counter % 10 == 0) {
                 let max_flush = if !st.player.valid { 64 } else { 1 };
                 for _ in 0..max_flush {
@@ -466,14 +644,26 @@ impl Hooks for Mod {
                     let Some((rx, rz)) = dirty_coord else {
                         break;
                     };
-                    if let Some(reg) = st.terrain.regions.get_mut(&(rx, rz)) {
-                        reg.dirty_to_disk = false;
-                        let encoded = reg.encode();
-                        write_data_file(
+                    let already_merged = st.loaded_regions.contains(&(rx, rz));
+                    let wrote = if let Some(reg) = st.terrain.regions.get_mut(&(rx, rz)) {
+                        flush_region_safely(files, &wkey, &dkey, rx, rz, reg, already_merged)
+                    } else {
+                        false
+                    };
+                    if wrote {
+                        st.loaded_regions.insert((rx, rz));
+                        let _ = write_data_file(
                             files,
-                            &format!("regions/{wkey}/{dkey}/r_{rx}_{rz}.bin"),
-                            &encoded,
+                            &format!("identities/{wkey}.txt"),
+                            st.terrain.world_key.as_bytes(),
                         );
+                        let _ = write_data_file(
+                            files,
+                            &format!("identities/{wkey}__{dkey}.txt"),
+                            st.terrain.dimension.as_bytes(),
+                        );
+                    } else {
+                        break;
                     }
                 }
             }
@@ -967,6 +1157,106 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn nether_roof_and_flush_merge_and_identity_isolation_hold() {
+        use crate::terrain::ColumnCell;
+        use crate::{
+            ConfigFiles, ConfigPath, flush_region_safely, legacy_identity_matches,
+            migrate_legacy_world_data, read_data_file, write_data_file,
+        };
+        use mod_api::{ConfigEntry, ConfigFileError, ConfigStat};
+        use std::collections::BTreeMap;
+        use std::sync::Mutex;
+
+        struct MemFiles {
+            files: Mutex<BTreeMap<String, Vec<u8>>>,
+            fail_writes: bool,
+        }
+        impl ConfigFiles for MemFiles {
+            fn read(&self, file: &ConfigPath) -> Result<Vec<u8>, ConfigFileError> {
+                self.files
+                    .lock()
+                    .unwrap()
+                    .get(file.as_str())
+                    .cloned()
+                    .ok_or(ConfigFileError::NotFound)
+            }
+            fn write(&self, file: &ConfigPath, bytes: &[u8]) -> Result<(), ConfigFileError> {
+                if self.fail_writes {
+                    return Err(ConfigFileError::NotFound);
+                }
+                self.files
+                    .lock()
+                    .unwrap()
+                    .insert(file.as_str().to_owned(), bytes.to_vec());
+                Ok(())
+            }
+            fn list(&self, _: &ConfigPath, _: Option<&str>, _: u32) -> Result<Vec<ConfigEntry>, ConfigFileError> {
+                Ok(Vec::new())
+            }
+            fn stat(&self, _: &ConfigPath) -> Result<Option<ConfigStat>, ConfigFileError> {
+                Ok(None)
+            }
+        }
+
+        // 1. Nether roof and lower Nether sanitize to distinct region layers.
+        assert_ne!(
+            sanitize_path_token("minecraft:the_nether"),
+            sanitize_path_token("minecraft:the_nether#roof")
+        );
+
+        // 2. Flushing an unmerged dirty region preserves existing disk chunks and retains dirty flag on failure.
+        let mem = MemFiles {
+            files: Mutex::new(BTreeMap::new()),
+            fail_writes: false,
+        };
+        let mut old_reg = RegionBuffer::new_empty();
+        let mut c0 = [ColumnCell::default(); 256];
+        c0[0] = ColumnCell {
+            rgb: [11, 22, 33],
+            height: 64,
+            biome: 1,
+            water_depth: 0,
+            flags: ColumnCell::FLAG_EXPLORED,
+        };
+        old_reg.set_chunk_surface(0, 0, &c0);
+        assert!(write_data_file(&mem, "regions/w/d/r_0_0.bin", &old_reg.encode()));
+
+        let mut partial_reg = RegionBuffer::new_empty();
+        let mut c1 = [ColumnCell::default(); 256];
+        c1[0] = ColumnCell {
+            rgb: [44, 55, 66],
+            height: 72,
+            biome: 2,
+            water_depth: 0,
+            flags: ColumnCell::FLAG_EXPLORED,
+        };
+        partial_reg.set_chunk_surface(1, 0, &c1);
+        assert!(flush_region_safely(&mem, "w", "d", 0, 0, &mut partial_reg, false));
+        assert!(!partial_reg.dirty_to_disk);
+        let merged_bytes = read_data_file(&mem, "regions/w/d/r_0_0.bin").unwrap();
+        let merged = RegionBuffer::decode(&merged_bytes).unwrap();
+        assert_eq!(merged.get(0, 0).rgb, [11, 22, 33]);
+        assert_eq!(merged.get(16, 0).rgb, [44, 55, 66]);
+
+        let failing = MemFiles {
+            files: Mutex::new(BTreeMap::new()),
+            fail_writes: true,
+        };
+        partial_reg.dirty_to_disk = true;
+        assert!(!flush_region_safely(&failing, "w", "d", 0, 0, &mut partial_reg, true));
+        assert!(partial_reg.dirty_to_disk);
+
+        // 3. Unverified ambiguous legacy files are ignored; explicit migration copies them.
+        assert!(!legacy_identity_matches(&mem, "sp_______", "sp_Мир1", None, None));
+        assert!(write_data_file(&mem, "waypoints/sp____.bin", b"wpdata"));
+        assert!(migrate_legacy_world_data(&mem, "sp_Мир", "sp_Мир", &[], &[]));
+        assert_eq!(
+            read_data_file(&mem, &format!("waypoints/{}.bin", sanitize_path_token("sp_Мир"))).as_deref(),
+            Some(b"wpdata".as_slice())
+        );
     }
 }
 
