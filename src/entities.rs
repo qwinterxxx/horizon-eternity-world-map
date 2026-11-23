@@ -291,18 +291,18 @@ pub fn mob_model_spec(species_id: &str, actual_w: u16, actual_h: u16) -> MobMode
                 16,
                 16,
                 &[
-                    MobPart::same(23, 0, 1, 3, -1, -3, 2, 5, false, false),
-                    MobPart::same(23, 0, 1, 3, 15, -3, 2, 5, false, false),
-                    MobPart::same(53, 1, 6, 3, 2, 10, 12, 6, false, true),
+                    MobPart::same(23, 0, 1, 3, -1, -2, 2, 4, false, false),
+                    MobPart::same(23, 0, 1, 3, 15, -2, 2, 4, false, false),
+                    MobPart::same(53, 1, 6, 3, 3, 10, 10, 5, false, true),
                 ],
             )
         }
         "sheep" => MobModelSpec::shaped(
-            MobFaceRect::custom(8, 8, 6, 6, 64, 32, None, 0x00E8_D4BA),
+            MobFaceRect::custom(8, 8, 8, 6, 64, 32, None, 0x00E8_D4BA),
             16,
-            16,
+            12,
             &[
-                MobPart::companion(8, 8, 8, 8, -2, -2, 20, 20, OverlaySource::SheepWool, true),
+                MobPart::companion(8, 8, 8, 8, -2, -3, 20, 17, OverlaySource::SheepWool, true),
             ],
         ),
         "chicken" => MobModelSpec::shaped(
@@ -348,14 +348,14 @@ pub fn mob_model_spec(species_id: &str, actual_w: u16, actual_h: u16) -> MobMode
             )
         }
         "slime" => MobModelSpec::shaped(
-            MobFaceRect::custom(6, 22, 6, 6, 64, 32, None, 0x006B_C35B),
+            MobFaceRect::custom(8, 8, 8, 8, 64, 32, None, 0x006B_C35B),
             16,
             16,
             &[
-                MobPart::same(34, 2, 2, 2, 2, 4, 4, 4, false, false),
-                MobPart::same(34, 6, 2, 2, 10, 4, 4, 4, false, false),
-                MobPart::same(33, 9, 1, 1, 7, 11, 3, 2, false, false),
-                MobPart::same(8, 8, 8, 8, -1, -1, 18, 18, false, false),
+                MobPart::same(6, 22, 6, 6, 2, 2, 12, 12, false, false),
+                MobPart::same(34, 2, 2, 2, 3, 4, 3, 3, false, false),
+                MobPart::same(34, 6, 2, 2, 10, 4, 3, 3, false, false),
+                MobPart::same(33, 9, 1, 1, 7, 10, 2, 2, false, false),
             ],
         ),
         "magma_cube" => MobModelSpec::shaped(
@@ -370,10 +370,15 @@ pub fn mob_model_spec(species_id: &str, actual_w: u16, actual_h: u16) -> MobMode
         "squid" | "glow_squid" => {
             let col = if sp == "glow_squid" { 0x0032_A8AE } else { 0x0036_5977 };
             MobModelSpec::shaped(
-                MobFaceRect::custom(12, 15, 12, 12, 64, 32, None, col),
-                15,
+                MobFaceRect::custom(12, 12, 12, 16, 64, 32, None, col),
+                12,
                 16,
-                &[MobPart::same(48, 4, 6, 4, 2, 15, 12, 3, false, false)],
+                &[
+                    MobPart::same(48, 2, 2, 12, 1, 15, 2, 7, false, false),
+                    MobPart::same(48, 2, 2, 12, 5, 15, 2, 7, false, false),
+                    MobPart::same(48, 2, 2, 12, 9, 15, 2, 7, false, false),
+                    MobPart::same(48, 2, 2, 12, 13, 15, 2, 7, false, false),
+                ],
             )
         }
         "bat" => MobModelSpec::shaped(
@@ -398,18 +403,34 @@ pub fn mob_model_spec(species_id: &str, actual_w: u16, actual_h: u16) -> MobMode
                 ],
             )
         }
-        "ghast" => MobModelSpec::simple(MobFaceRect::custom(16, 16, 16, 16, 128, 64, None, 0x00F0_F0F0)),
-        "happy_ghast" => {
-            MobModelSpec::simple(MobFaceRect::custom(16, 16, 16, 16, 128, 128, None, 0x00F0_F0F0))
-        }
+        "ghast" => MobModelSpec::shaped(
+            MobFaceRect::custom(16, 16, 16, 16, 128, 64, None, 0x00F0_F0F0),
+            16,
+            16,
+            &[
+                MobPart::same(2, 2, 2, 10, 2, 15, 2, 4, false, false),
+                MobPart::same(2, 2, 2, 12, 7, 15, 2, 5, false, false),
+                MobPart::same(2, 2, 2, 10, 12, 15, 2, 4, false, false),
+            ],
+        ),
+        "happy_ghast" => MobModelSpec::shaped(
+            MobFaceRect::custom(16, 16, 16, 16, 128, 128, None, 0x00F0_F0F0),
+            16,
+            16,
+            &[
+                MobPart::same(2, 2, 2, 10, 2, 15, 2, 4, false, false),
+                MobPart::same(2, 2, 2, 12, 7, 15, 2, 5, false, false),
+                MobPart::same(2, 2, 2, 10, 12, 15, 2, 4, false, false),
+            ],
+        ),
         "wolf" => MobModelSpec::shaped(
             MobFaceRect::custom(4, 4, 6, 6, 64, 32, None, 0x00CC_C8C0),
             16,
             16,
             &[
-                MobPart::same(17, 15, 2, 2, 1, -4, 4, 4, false, false),
-                MobPart::same(17, 15, 2, 2, 11, -4, 4, 4, false, false),
-                MobPart::same(4, 14, 3, 3, 4, 9, 8, 7, false, true),
+                MobPart::same(17, 15, 2, 2, 1, -3, 4, 3, false, false),
+                MobPart::same(17, 15, 2, 2, 11, -3, 4, 3, false, false),
+                MobPart::same(4, 14, 3, 3, 4, 10, 8, 5, false, true),
             ],
         ),
         "ocelot" | "cat" => MobModelSpec::shaped(
@@ -471,7 +492,15 @@ pub fn mob_model_spec(species_id: &str, actual_w: u16, actual_h: u16) -> MobMode
             16,
             &[MobPart::companion(8, 8, 8, 8, 0, 0, 16, 16, OverlaySource::EndermanEyes, false)],
         ),
-        "blaze" => MobModelSpec::simple(MobFaceRect::std32(0x00F4_A924)),
+        "blaze" => MobModelSpec::shaped(
+            MobFaceRect::std32(0x00F4_A924),
+            16,
+            16,
+            &[
+                MobPart::same(2, 18, 2, 8, -4, 3, 3, 12, true, false),
+                MobPart::same(2, 18, 2, 8, 17, 3, 3, 12, true, false),
+            ],
+        ),
         "piglin" | "piglin_brute" | "zombified_piglin" => MobModelSpec::shaped(
             MobFaceRect::std64(0x00D8_9A8A),
             16,
@@ -483,8 +512,24 @@ pub fn mob_model_spec(species_id: &str, actual_w: u16, actual_h: u16) -> MobMode
             ],
         ),
         "player" => MobModelSpec::simple(MobFaceRect::std64(0x00E6_C4A2)),
-        "allay" => MobModelSpec::simple(MobFaceRect::custom(5, 5, 5, 5, 32, 32, None, 0x0053_C9F5)),
-        "vex" => MobModelSpec::simple(MobFaceRect::custom(5, 5, 5, 5, 32, 32, None, 0x0092_B2CE)),
+        "allay" => MobModelSpec::shaped(
+            MobFaceRect::custom(5, 5, 5, 5, 32, 32, None, 0x0053_C9F5),
+            15,
+            15,
+            &[
+                MobPart::same(16, 15, 6, 8, -5, 2, 6, 11, true, false),
+                MobPart::same(16, 15, 6, 8, 15, 2, 6, 11, true, false),
+            ],
+        ),
+        "vex" => MobModelSpec::shaped(
+            MobFaceRect::custom(5, 5, 5, 5, 32, 32, None, 0x0092_B2CE),
+            15,
+            15,
+            &[
+                MobPart::same(16, 15, 6, 8, -5, 2, 6, 11, true, false),
+                MobPart::same(16, 15, 6, 8, 15, 2, 6, 11, true, false),
+            ],
+        ),
         "breeze" => MobModelSpec::shaped(
             MobFaceRect::custom(8, 8, 8, 8, 32, 32, None, 0x008D_B0E8),
             16,
@@ -504,14 +549,44 @@ pub fn mob_model_spec(species_id: &str, actual_w: u16, actual_h: u16) -> MobMode
             &[MobPart::same(26, 2, 2, 4, 6, 10, 4, 6, false, true)],
         ),
         "snow_golem" => MobModelSpec::simple(MobFaceRect::custom(8, 8, 8, 8, 64, 64, None, 0x00EC_F5F5)),
-        "ravager" => MobModelSpec::simple(MobFaceRect::custom(16, 16, 16, 20, 128, 128, None, 0x005B_585B)),
-        "warden" => MobModelSpec::simple(MobFaceRect::custom(16, 16, 16, 16, 128, 128, None, 0x000F_3E4C)),
-        "hoglin" | "zoglin" => {
-            MobModelSpec::simple(MobFaceRect::custom(80, 19, 14, 19, 128, 64, None, 0x00C6_7C6E))
-        }
-        "sniffer" => {
-            MobModelSpec::simple(MobFaceRect::custom(26, 26, 26, 18, 192, 192, None, 0x009D_382B))
-        }
+        "ravager" => MobModelSpec::shaped(
+            MobFaceRect::custom(16, 16, 16, 20, 128, 128, None, 0x005B_585B),
+            15,
+            16,
+            &[
+                MobPart::same(76, 57, 2, 10, -3, -2, 3, 10, false, true),
+                MobPart::same(76, 57, 2, 10, 16, -2, 3, 10, false, true),
+            ],
+        ),
+        "warden" => MobModelSpec::shaped(
+            MobFaceRect::custom(16, 16, 16, 16, 128, 128, None, 0x000F_3E4C),
+            16,
+            16,
+            &[
+                MobPart::same(58, 0, 16, 16, -8, -4, 9, 12, false, false),
+                MobPart::same(58, 0, 16, 16, 15, -4, 9, 12, false, false),
+            ],
+        ),
+        "hoglin" | "zoglin" => MobModelSpec::shaped(
+            MobFaceRect::custom(80, 19, 14, 19, 128, 64, None, 0x00C6_7C6E),
+            16,
+            15,
+            &[
+                MobPart::same(3, 15, 6, 3, -4, 2, 5, 5, false, false),
+                MobPart::same(3, 8, 6, 3, 15, 2, 5, 5, false, false),
+                MobPart::same(2, 14, 2, 6, 0, 10, 3, 6, false, true),
+                MobPart::same(11, 14, 2, 6, 13, 10, 3, 6, false, true),
+            ],
+        ),
+        "sniffer" => MobModelSpec::shaped(
+            MobFaceRect::custom(26, 26, 26, 18, 192, 192, None, 0x009D_382B),
+            16,
+            13,
+            &[
+                MobPart::same(8, 27, 4, 18, -3, 1, 4, 13, false, true),
+                MobPart::same(8, 27, 4, 18, 15, 1, 4, 13, false, true),
+            ],
+        ),
         "creaking" => MobModelSpec::shaped(
             MobFaceRect::custom(7, 7, 6, 10, 64, 64, None, 0x0066_5D52),
             12,
@@ -519,12 +594,12 @@ pub fn mob_model_spec(species_id: &str, actual_w: u16, actual_h: u16) -> MobMode
             &[MobPart::companion(7, 7, 6, 10, 0, 0, 16, 16, OverlaySource::CreakingEyes, false)],
         ),
         "bee" => MobModelSpec::shaped(
-            MobFaceRect::custom(7, 7, 7, 7, 64, 64, None, 0x00EB_BE34),
+            MobFaceRect::custom(10, 10, 7, 7, 64, 64, None, 0x00EB_BE34),
             16,
             16,
             &[
-                MobPart::same(2, 0, 1, 3, 3, -4, 2, 4, false, false),
-                MobPart::same(2, 0, 1, 3, 11, -4, 2, 4, false, false),
+                MobPart::same(2, 0, 1, 3, 3, -3, 2, 3, false, false),
+                MobPart::same(2, 0, 1, 3, 11, -3, 2, 3, false, false),
             ],
         ),
         "fox" => MobModelSpec::shaped(
@@ -546,13 +621,35 @@ pub fn mob_model_spec(species_id: &str, actual_w: u16, actual_h: u16) -> MobMode
                 MobPart::same(12, 41, 3, 6, 16, 1, 4, 11, false, false),
             ],
         ),
-        "frog" => MobModelSpec::simple(MobFaceRect::custom(7, 7, 7, 4, 48, 48, None, 0x00C6_6B3A)),
-        "horse" | "donkey" | "mule" | "skeleton_horse" | "zombie_horse" => {
-            MobModelSpec::simple(MobFaceRect::custom(7, 20, 7, 5, 64, 64, None, 0x008A_5D3B))
-        }
-        "llama" | "trader_llama" => {
-            MobModelSpec::simple(MobFaceRect::custom(19, 19, 8, 10, 128, 64, None, 0x00DF_C59B))
-        }
+        "frog" => MobModelSpec::shaped(
+            MobFaceRect::custom(7, 7, 7, 4, 48, 48, None, 0x00C6_6B3A),
+            16,
+            11,
+            &[
+                MobPart::same(2, 2, 3, 3, 1, -4, 5, 5, false, false),
+                MobPart::same(2, 7, 3, 3, 10, -4, 5, 5, false, false),
+            ],
+        ),
+        "horse" | "donkey" | "mule" | "skeleton_horse" | "zombie_horse" => MobModelSpec::shaped(
+            MobFaceRect::custom(7, 20, 7, 5, 64, 64, None, 0x008A_5D3B),
+            16,
+            12,
+            &[
+                MobPart::same(20, 17, 2, 3, 1, -4, 3, 4, false, false),
+                MobPart::same(20, 17, 2, 3, 12, -4, 3, 4, false, false),
+                MobPart::same(5, 30, 5, 5, 3, 9, 10, 6, false, true),
+            ],
+        ),
+        "llama" | "trader_llama" => MobModelSpec::shaped(
+            MobFaceRect::custom(19, 19, 8, 10, 128, 64, None, 0x00DF_C59B),
+            13,
+            16,
+            &[
+                MobPart::same(19, 2, 3, 3, 1, -4, 4, 4, false, false),
+                MobPart::same(19, 2, 3, 3, 11, -4, 4, 4, false, false),
+                MobPart::same(4, 4, 4, 4, 4, 9, 8, 5, false, true),
+            ],
+        ),
         "panda" => MobModelSpec::shaped(
             MobFaceRect::custom(10, 10, 13, 10, 64, 64, None, 0x00EB_EBEC),
             16,
@@ -597,20 +694,109 @@ pub fn mob_model_spec(species_id: &str, actual_w: u16, actual_h: u16) -> MobMode
             &[MobPart::companion(5, 5, 7, 3, 0, 0, 16, 16, OverlaySource::PhantomEyes, false)],
         ),
         "shulker" => MobModelSpec::simple(MobFaceRect::custom(6, 58, 6, 6, 64, 64, None, 0x0093_6693)),
-        "strider" => MobModelSpec::simple(MobFaceRect::custom(16, 16, 16, 14, 64, 128, None, 0x00A1_3636)),
-        "camel" => MobModelSpec::simple(MobFaceRect::custom(33, 19, 7, 14, 128, 128, None, 0x00D8_AE6E)),
-        "armadillo" => MobModelSpec::simple(MobFaceRect::custom(46, 20, 4, 5, 64, 64, None, 0x00A8_7F70)),
-        "goat" => MobModelSpec::simple(MobFaceRect::custom(34, 6, 6, 7, 64, 64, None, 0x00D6_CEBE)),
-        "turtle" => MobModelSpec::simple(MobFaceRect::custom(7, 7, 6, 5, 128, 64, None, 0x0049_9B42)),
+        "strider" => MobModelSpec::shaped(
+            MobFaceRect::custom(16, 16, 16, 14, 64, 128, None, 0x00A1_3636),
+            16,
+            14,
+            &[
+                MobPart::same(16, 48, 12, 4, -4, 3, 4, 6, false, false),
+                MobPart::same(16, 48, 12, 4, 16, 3, 4, 6, false, false),
+            ],
+        ),
+        "camel" => MobModelSpec::shaped(
+            MobFaceRect::custom(33, 19, 7, 14, 128, 128, None, 0x00D8_AE6E),
+            13,
+            16,
+            &[
+                MobPart::same(46, 1, 3, 2, -2, 0, 4, 4, false, false),
+                MobPart::same(46, 1, 3, 2, 14, 0, 4, 4, false, false),
+            ],
+        ),
+        "armadillo" => MobModelSpec::shaped(
+            MobFaceRect::custom(46, 20, 4, 5, 64, 64, None, 0x00A8_7F70),
+            14,
+            15,
+            &[
+                MobPart::same(43, 11, 2, 5, -2, -2, 4, 7, false, false),
+                MobPart::same(48, 11, 2, 5, 14, -2, 4, 7, false, false),
+            ],
+        ),
+        "goat" => MobModelSpec::shaped(
+            MobFaceRect::custom(34, 6, 6, 7, 64, 64, None, 0x00D6_CEBE),
+            14,
+            16,
+            &[
+                MobPart::same(14, 57, 2, 7, 2, -6, 3, 7, false, false),
+                MobPart::same(14, 57, 2, 7, 11, -6, 3, 7, false, false),
+                MobPart::same(4, 62, 3, 2, -3, 2, 4, 3, false, false),
+                MobPart::same(4, 62, 3, 2, 15, 2, 4, 3, false, false),
+            ],
+        ),
+        "turtle" => MobModelSpec::shaped(
+            MobFaceRect::custom(7, 7, 6, 5, 128, 64, None, 0x0049_9B42),
+            16,
+            13,
+            &[MobPart::same(17, 45, 14, 10, -2, -3, 20, 19, true, false)],
+        ),
         "dolphin" => MobModelSpec::shaped(
             MobFaceRect::custom(6, 6, 6, 5, 64, 64, None, 0x0092_A4B8),
             16,
             14,
             &[MobPart::same(3, 22, 4, 2, 5, 9, 6, 5, false, true)],
         ),
-        "cod" => MobModelSpec::simple(MobFaceRect::custom(11, 0, 5, 4, 32, 32, None, 0x00B8_A282)),
-        "salmon" => MobModelSpec::simple(MobFaceRect::custom(22, 2, 4, 4, 32, 32, None, 0x00A5_4E48)),
+        "cod" => MobModelSpec::shaped(
+            MobFaceRect::custom(11, 3, 6, 4, 32, 32, None, 0x00B8_A282),
+            16,
+            11,
+            &[
+                MobPart::same(0, 7, 7, 4, 14, 1, 8, 14, false, false),
+            ],
+        ),
+        "salmon" => MobModelSpec::shaped(
+            MobFaceRect::custom(24, 3, 4, 4, 32, 32, None, 0x00A5_4E48),
+            14,
+            14,
+            &[
+                MobPart::same(0, 8, 8, 4, 13, 1, 9, 13, false, false),
+            ],
+        ),
+        "tropical_fish" => MobModelSpec::shaped(
+            MobFaceRect::custom(2, 2, 6, 4, 32, 32, None, 0x00F0_8830),
+            17,
+            10,
+            &[MobPart::same(22, 0, 4, 4, 15, 1, 5, 14, false, false)],
+        ),
+        "tadpole" => MobModelSpec::shaped(
+            MobFaceRect::custom(2, 2, 4, 3, 16, 16, None, 0x004B_3A2A),
+            16,
+            10,
+            &[MobPart::same(0, 7, 6, 3, 15, 3, 7, 9, false, false)],
+        ),
         "pufferfish" => MobModelSpec::simple(MobFaceRect::custom(6, 6, 8, 8, 32, 32, None, 0x00E4_B744)),
+        "parrot" => MobModelSpec::shaped(
+            MobFaceRect::custom(4, 4, 3, 3, 32, 32, None, 0x00D8_3428),
+            14,
+            14,
+            &[MobPart::same(12, 8, 2, 2, 5, 8, 6, 5, false, true)],
+        ),
+        "wither" => MobModelSpec::shaped(
+            MobFaceRect::custom(8, 8, 8, 8, 64, 64, None, 0x002B_2B2E),
+            16,
+            16,
+            &[
+                MobPart::same(8, 8, 8, 8, -7, 3, 9, 10, true, false),
+                MobPart::same(8, 8, 8, 8, 14, 3, 9, 10, true, false),
+            ],
+        ),
+        "ender_dragon" => MobModelSpec::shaped(
+            MobFaceRect::custom(128, 46, 16, 16, 256, 256, None, 0x0022_1C28),
+            16,
+            16,
+            &[
+                MobPart::same(192, 60, 12, 8, 2, 10, 12, 7, false, true),
+            ],
+        ),
+        "endermite" => MobModelSpec::simple(MobFaceRect::custom(2, 2, 4, 3, 64, 32, None, 0x003B_2848)),
         _ => MobModelSpec::simple(MobFaceRect::std64(0x00EE_DF44)),
     }
 }

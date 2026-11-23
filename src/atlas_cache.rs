@@ -197,6 +197,25 @@ impl RegionBuffer {
         self.dirty_to_disk = true;
     }
 
+    /// Fill unexplored cells in `self` from a previously persisted `disk` region without
+    /// clobbering freshly scanned live chunks.
+    pub fn merge_unexplored_from(&mut self, disk: &RegionBuffer) -> bool {
+        let mut merged_any = false;
+        for (idx, &dc) in disk.cells.iter().enumerate() {
+            if dc.is_explored() && !self.cells[idx].is_explored() {
+                self.cells[idx] = dc;
+                self.explored_columns += 1;
+                merged_any = true;
+            }
+        }
+        if merged_any {
+            self.explored_tile_mask |= disk.explored_tile_mask;
+            self.overview_dirty = true;
+            self.dirty_to_disk = true;
+        }
+        merged_any
+    }
+
     /// Recompute the 64x64 overview texture preserving crisp land/water separation.
     pub fn ensure_overview(&mut self) {
         if !self.overview_dirty {
@@ -513,6 +532,46 @@ impl TerrainStore {
         self.cave_chunks
             .get(&(cx, cz))
             .map(|(_, c)| c[(lz * 16 + lx) as usize])
+    }
+
+    /// Merge a region loaded from disk into the in-memory store (preserving any freshly scanned chunks)
+    /// and invalidate cached GPU tiles covering this region so restored terrain renders immediately.
+    pub fn merge_disk_region(&mut self, rx: i32, rz: i32, disk: RegionBuffer) {
+        let changed = match self.regions.get_mut(&(rx, rz)) {
+            Some(existing) => existing.merge_unexplored_from(&disk),
+            None => {
+                self.regions.insert((rx, rz), disk);
+                true
+            }
+        };
+        if changed {
+            let base_tx = rx * 8;
+            let base_tz = rz * 8;
+            for dtz in 0..8 {
+                for dtx in 0..8 {
+                    self.mark_tile_dirty(TileKey::SurfaceDetail {
+                        tx: base_tx + dtx,
+                        tz: base_tz + dtz,
+                    });
+                }
+            }
+            let base_m2x = rx * 4;
+            let base_m2z = rz * 4;
+            for dmz in 0..4 {
+                for dmx in 0..4 {
+                    self.mark_tile_dirty(TileKey::Mid2 {
+                        tx: base_m2x + dmx,
+                        tz: base_m2z + dmz,
+                    });
+                }
+            }
+            for qz in 0..2u8 {
+                for qx in 0..2u8 {
+                    self.mark_tile_dirty(TileKey::Mid4 { rx, rz, qx, qz });
+                }
+            }
+            self.mark_tile_dirty(TileKey::RegionOverview { rx, rz });
+        }
     }
 
     /// Record scanned 16x16 surface chunk and mark affected GPU tiles dirty across mip pyramid.

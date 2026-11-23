@@ -8,6 +8,9 @@ pub enum TintMode {
     Foliage = 2,
     DryFoliage = 3,
     Water = 4,
+    FixedSpruce = 5,
+    FixedBirch = 6,
+    FixedLilyPad = 7,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -135,16 +138,22 @@ pub fn apply_biome_tint(
         TintMode::Foliage => biome.foliage,
         TintMode::DryFoliage => biome.dry_foliage,
         TintMode::Water => biome.water,
+        TintMode::FixedSpruce => 0x0061_9961,
+        TintMode::FixedBirch => 0x0080_A755,
+        TintMode::FixedLilyPad => 0x0020_8030,
     };
     let [_, tr, tg, tb] = tint_rgb.to_be_bytes();
     let mut r = ((u16::from(rgb[0]) * u16::from(tr) + 127) / 255) as u16;
     let mut g = ((u16::from(rgb[1]) * u16::from(tg) + 127) / 255) as u16;
     let mut b = ((u16::from(rgb[2]) * u16::from(tb) + 127) / 255) as u16;
-    if matches!(tint, TintMode::Foliage) {
-        // Tree canopies in Xaero sit noticeably deeper/richer than flat grass beneath them.
-        r = (r * 78) / 100;
-        g = (g * 85) / 100;
-        b = (b * 76) / 100;
+    if matches!(
+        tint,
+        TintMode::Foliage | TintMode::FixedSpruce | TintMode::FixedBirch
+    ) {
+        // Gentle canopy depth so tree crowns stand out cleanly over grass without looking muddy.
+        r = (r * 88) / 100;
+        g = (g * 92) / 100;
+        b = (b * 86) / 100;
     }
     [r.min(255) as u8, g.min(255) as u8, b.min(255) as u8]
 }
@@ -205,16 +214,15 @@ pub fn shade_column_pixel(
     g = (g * factor).clamp(0.0, 255.0);
     b = (b * factor).clamp(0.0, 255.0);
 
-    // Subtle atmospheric height tint on high terrain peaks vs deep lowlands + slight Xaero contrast.
+    // Subtle atmospheric height tint on high terrain peaks vs deep lowlands while preserving true block RGB.
     if !cell.is_water() && !in_cave {
-        let height_bias = ((f32::from(cell.height) - 64.0) * 0.0009).clamp(-0.07, 0.08);
+        let height_bias = ((f32::from(cell.height) - 64.0) * 0.0007).clamp(-0.05, 0.06);
         let mul = 1.0 + height_bias;
         let avg = (r + g + b) * (1.0 / 3.0);
-        // Gentle saturation & contrast punch so greens/stone match original Xaero richness.
-        let boost = 1.08;
-        r = ((avg + (r - avg) * boost) * mul * 0.94).clamp(0.0, 255.0);
-        g = ((avg + (g - avg) * boost) * mul * 0.95).clamp(0.0, 255.0);
-        b = ((avg + (b - avg) * boost) * mul * 0.93).clamp(0.0, 255.0);
+        let boost = 1.04;
+        r = ((avg + (r - avg) * boost) * mul).clamp(0.0, 255.0);
+        g = ((avg + (g - avg) * boost) * mul).clamp(0.0, 255.0);
+        b = ((avg + (b - avg) * boost) * mul).clamp(0.0, 255.0);
     }
 
     [r.round() as u8, g.round() as u8, b.round() as u8, 255]

@@ -2,6 +2,7 @@
 
 pub mod atlas_cache;
 pub mod entities;
+pub mod mob_icons;
 pub mod state;
 pub mod terrain;
 pub mod ui_math;
@@ -33,7 +34,7 @@ fn fnv1a_32(bytes: &[u8]) -> u32 {
     hash
 }
 
-fn sanitize_path_token(s: &str) -> String {
+pub fn sanitize_path_token(s: &str) -> String {
     let mut prefix = String::with_capacity(s.len().min(48));
     let mut needs_hash = false;
     for (i, c) in s.chars().enumerate() {
@@ -53,6 +54,27 @@ fn sanitize_path_token(s: &str) -> String {
         format!("{trimmed}_{:08x}", fnv1a_32(s.as_bytes()))
     } else {
         prefix
+    }
+}
+
+/// Legacy v0.1.0 path sanitizer (no hash suffix) used as read-only fallback so existing
+/// v0.1.0 server/world maps migrate seamlessly on load.
+fn sanitize_path_token_legacy(s: &str) -> String {
+    let out: String = s
+        .chars()
+        .take(48)
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '_' || c == '-' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    if out.is_empty() {
+        "default".to_owned()
+    } else {
+        out
     }
 }
 
@@ -319,13 +341,42 @@ impl Hooks for Mod {
                 write_data_file(files, "config.bin", &encoded);
             }
 
+            // Flush any queued disk writes from a recent world/dimension switch immediately.
+            if !st.pending_disk_writes.is_empty() {
+                let queued = std::mem::take(&mut st.pending_disk_writes);
+                for (path, bytes) in queued {
+                    write_data_file(files, &path, &bytes);
+                }
+            }
+
             let wkey = sanitize_path_token(&st.terrain.world_key);
             let dkey = sanitize_path_token(&st.terrain.dimension);
+            let wkey_legacy = sanitize_path_token_legacy(&st.terrain.world_key);
+            let dkey_legacy = sanitize_path_token_legacy(&st.terrain.dimension);
             let valid_world = !st.terrain.world_key.is_empty();
+
+            if valid_world
+                && (st.loaded_regions_key.0 != st.terrain.world_key
+                    || st.loaded_regions_key.1 != st.terrain.dimension)
+            {
+                st.loaded_regions_key = (
+                    st.terrain.world_key.clone(),
+                    st.terrain.dimension.clone(),
+                );
+                st.loaded_regions.clear();
+            }
 
             if valid_world && st.biomes_loaded_world != st.terrain.world_key {
                 st.biomes_loaded_world = st.terrain.world_key.clone();
-                if let Some(bytes) = read_data_file(files, &format!("biomes/{wkey}.bin"))
+                let biome_bytes = read_data_file(files, &format!("biomes/{wkey}.bin"))
+                    .or_else(|| {
+                        if wkey_legacy != wkey {
+                            read_data_file(files, &format!("biomes/{wkey_legacy}.bin"))
+                        } else {
+                            None
+                        }
+                    });
+                if let Some(bytes) = biome_bytes
                     && let Some(tbl) = BiomeTable::decode(&bytes)
                 {
                     st.terrain.biomes = tbl;
@@ -334,7 +385,15 @@ impl Hooks for Mod {
             }
             if valid_world && st.waypoints_loaded_world != st.terrain.world_key {
                 st.waypoints_loaded_world = st.terrain.world_key.clone();
-                if let Some(bytes) = read_data_file(files, &format!("waypoints/{wkey}.bin"))
+                let wp_bytes = read_data_file(files, &format!("waypoints/{wkey}.bin"))
+                    .or_else(|| {
+                        if wkey_legacy != wkey {
+                            read_data_file(files, &format!("waypoints/{wkey_legacy}.bin"))
+                        } else {
+                            None
+                        }
+                    });
+                if let Some(bytes) = wp_bytes
                     && let Some((list, next_id)) = decode_waypoints(&bytes)
                 {
                     st.waypoints = list;
@@ -345,14 +404,15 @@ impl Hooks for Mod {
                 }
             }
 
-            // Lazily load visible/nearby persisted regions on disk once per region coordinate.
+            // Lazily load visible/nearby persisted regions on disk once per region coordinate,
+            // merging into any in-memory region that already received freshly scanned chunks.
             if valid_world && st.player.valid {
                 let prx = floor_div(st.player.x.floor() as i32, atlas_cache::REGION_SIZE);
                 let prz = floor_div(st.player.z.floor() as i32, atlas_cache::REGION_SIZE);
                 let vr = if st.map.open {
                     let crx = floor_div(st.map.center_x.floor() as i32, atlas_cache::REGION_SIZE);
                     let crz = floor_div(st.map.center_z.floor() as i32, atlas_cache::REGION_SIZE);
-                    (crx, crz, 2)
+                    (crx, crz, 3)
                 } else {
                     (prx, prz, 1)
                 };
@@ -361,14 +421,21 @@ impl Hooks for Mod {
                         if !st.loaded_regions.insert((rx, rz)) {
                             continue;
                         }
-                        if st.terrain.regions.contains_key(&(rx, rz)) {
-                            continue;
-                        }
                         let path = format!("regions/{wkey}/{dkey}/r_{rx}_{rz}.bin");
-                        if let Some(bytes) = read_data_file(files, &path)
+                        let reg_bytes = read_data_file(files, &path).or_else(|| {
+                            if wkey_legacy != wkey || dkey_legacy != dkey {
+                                read_data_file(
+                                    files,
+                                    &format!("regions/{wkey_legacy}/{dkey_legacy}/r_{rx}_{rz}.bin"),
+                                )
+                            } else {
+                                None
+                            }
+                        });
+                        if let Some(bytes) = reg_bytes
                             && let Some(reg) = RegionBuffer::decode(&bytes)
                         {
-                            st.terrain.regions.insert((rx, rz), reg);
+                            st.terrain.merge_disk_region(rx, rz, reg);
                         }
                     }
                 }
@@ -380,30 +447,34 @@ impl Hooks for Mod {
                 write_data_file(files, &format!("waypoints/{wkey}.bin"), &bytes);
             }
 
-            if valid_world && st.biomes_dirty && (st.tick_counter % 40 == 0) {
+            if valid_world && st.biomes_dirty && (st.tick_counter % 20 == 0 || !st.player.valid) {
                 st.biomes_dirty = false;
                 let bytes = st.terrain.biomes.encode();
                 write_data_file(files, &format!("biomes/{wkey}.bin"), &bytes);
             }
 
-            // Flush at most 1 dirty region per 20 ticks (zero frame-spike background saving).
-            if valid_world && (st.tick_counter % 20 == 0) {
-                let dirty_coord = st
-                    .terrain
-                    .regions
-                    .iter()
-                    .find(|(_, r)| r.dirty_to_disk)
-                    .map(|(&c, _)| c);
-                if let Some((rx, rz)) = dirty_coord
-                    && let Some(reg) = st.terrain.regions.get_mut(&(rx, rz))
-                {
-                    reg.dirty_to_disk = false;
-                    let encoded = reg.encode();
-                    write_data_file(
-                        files,
-                        &format!("regions/{wkey}/{dkey}/r_{rx}_{rz}.bin"),
-                        &encoded,
-                    );
+            // Flush dirty regions in background (1 per 10 ticks while playing, or all on leave/disconnect).
+            if valid_world && (!st.player.valid || st.tick_counter % 10 == 0) {
+                let max_flush = if !st.player.valid { 64 } else { 1 };
+                for _ in 0..max_flush {
+                    let dirty_coord = st
+                        .terrain
+                        .regions
+                        .iter()
+                        .find(|(_, r)| r.dirty_to_disk)
+                        .map(|(&c, _)| c);
+                    let Some((rx, rz)) = dirty_coord else {
+                        break;
+                    };
+                    if let Some(reg) = st.terrain.regions.get_mut(&(rx, rz)) {
+                        reg.dirty_to_disk = false;
+                        let encoded = reg.encode();
+                        write_data_file(
+                            files,
+                            &format!("regions/{wkey}/{dkey}/r_{rx}_{rz}.bin"),
+                            &encoded,
+                        );
+                    }
                 }
             }
 
@@ -827,6 +898,75 @@ mod tests {
         assert_ne!(uni_a, uni_b);
         assert_ne!(uni_a, uni_c);
         assert!(uni_a.len() <= 48);
+    }
+
+    #[test]
+    fn disk_region_merge_preserves_live_chunks_and_restores_saved_map() {
+        use crate::atlas_cache::TerrainStore;
+        use crate::terrain::ColumnCell;
+
+        let mut disk_reg = RegionBuffer::new_empty();
+        let mut old_chunk = [ColumnCell::default(); 256];
+        old_chunk[0] = ColumnCell {
+            rgb: [10, 20, 30],
+            height: 64,
+            biome: 1,
+            water_depth: 0,
+            flags: ColumnCell::FLAG_EXPLORED,
+        };
+        disk_reg.set_chunk_surface(0, 0, &old_chunk);
+        let encoded = disk_reg.encode();
+        let decoded = RegionBuffer::decode(&encoded).expect("decode saved region");
+
+        let mut store = TerrainStore::new();
+        // Simulate a freshly scanned live chunk arriving BEFORE disk load (rejoin race!).
+        let mut live_chunk = [ColumnCell::default(); 256];
+        live_chunk[0] = ColumnCell {
+            rgb: [200, 100, 50],
+            height: 70,
+            biome: 2,
+            water_depth: 0,
+            flags: ColumnCell::FLAG_EXPLORED,
+        };
+        store.put_surface_chunk(1, 0, &live_chunk);
+
+        // Now merge the disk region (0, 0): both chunk (0,0) from disk AND chunk (1,0) live must exist!
+        store.merge_disk_region(0, 0, decoded);
+        assert_eq!(store.get_column(0, 0).map(|c| c.rgb), Some([10, 20, 30]));
+        assert_eq!(store.get_column(16, 0).map(|c| c.rgb), Some([200, 100, 50]));
+    }
+
+    #[test]
+    fn pixel_mob_icons_are_well_formed_and_preserve_kept_species() {
+        use crate::mob_icons::pixel_mob_icon;
+
+        for kept in ["squid", "glow_squid", "skeleton", "wither_skeleton", "chicken", "pig", "player"] {
+            assert!(pixel_mob_icon(kept).is_none(), "{kept} should keep texture icon");
+        }
+        let species = [
+            "creeper", "zombie", "husk", "drowned", "zombie_villager", "spider", "cave_spider",
+            "enderman", "slime", "magma_cube", "witch", "pillager", "evoker", "phantom",
+            "silverfish", "endermite", "guardian", "elder_guardian", "shulker", "ravager",
+            "warden", "breeze", "creaking", "vex", "cow", "mooshroom", "sheep", "wolf", "cat",
+            "fox", "bee", "horse", "donkey", "skeleton_horse", "zombie_horse", "llama", "camel",
+            "goat", "rabbit", "panda", "polar_bear", "armadillo", "sniffer", "bat", "parrot",
+            "allay", "salmon", "cod", "tropical_fish", "pufferfish", "tadpole", "turtle",
+            "dolphin", "axolotl", "frog", "nautilus", "villager", "wandering_trader",
+            "iron_golem", "snow_golem", "copper_golem", "ghast", "blaze", "piglin",
+            "zombified_piglin", "hoglin", "strider", "wither", "ender_dragon",
+        ];
+        for sp in species {
+            let ic = pixel_mob_icon(sp).unwrap_or_else(|| panic!("missing icon for {sp}"));
+            assert_eq!(ic.rows.len(), usize::from(ic.h), "{sp} height mismatch");
+            for (ry, row) in ic.rows.iter().enumerate() {
+                assert_eq!(row.len(), usize::from(ic.w), "{sp} row {ry} width mismatch");
+                for &b in row.as_bytes() {
+                    if b != b'.' {
+                        assert!(ic.color_of(b).is_some(), "{sp} unknown char '{}'", b as char);
+                    }
+                }
+            }
+        }
     }
 }
 

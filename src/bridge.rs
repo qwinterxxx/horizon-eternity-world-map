@@ -17,6 +17,7 @@ use mod_eternity_world_map::atlas_cache::{
 use mod_eternity_world_map::entities::{
     EntityCategory, MobPart, OverlaySource, RadarEntity, mob_model_spec, normalize_species,
 };
+use mod_eternity_world_map::mob_icons::{PixelMobIcon, pixel_mob_icon};
 use mod_eternity_world_map::state::{
     ActivePanel, ModalField, PendingCommand, PreloadState, resolve_world_key, state,
 };
@@ -54,6 +55,7 @@ struct BridgeRuntime {
     frame_count: u64,
     last_world_key: String,
     last_dim_id: String,
+    last_on_nether_roof: bool,
     preload_job: Option<PreloadJob>,
     russian_ui: bool,
 }
@@ -73,6 +75,7 @@ impl BridgeRuntime {
             frame_count: 0,
             last_world_key: String::new(),
             last_dim_id: String::new(),
+            last_on_nether_roof: false,
             preload_job: None,
             russian_ui: false,
         }
@@ -185,8 +188,11 @@ fn build_block_palette(game: &Game<'_>) -> Vec<BlockLook> {
         let mut tint = TintMode::None;
 
         if is_water {
-            picked_rgb = [152, 168, 204];
+            picked_rgb = [182, 198, 224];
             tint = TintMode::Water;
+        } else if sf.fluid == Fluid::Lava || name == "minecraft:lava" {
+            picked_rgb = [232, 102, 24];
+            tint = TintMode::None;
         } else if let Ok(models) = render.model_catalog.collect_seeded(id, 0) {
             // Prefer upward-facing face first so grass tops show grass green rather than dirt side!
             let mut best_face = None;
@@ -206,7 +212,16 @@ fn build_block_palette(game: &Game<'_>) -> Vec<BlockLook> {
                     picked_rgb = avg;
                 }
                 if face.quad.tint_index >= 0 {
-                    tint = if name.contains("leaf_litter") || name.contains("dry_") || name.contains("wildflowers") {
+                    tint = if name == "minecraft:spruce_leaves" {
+                        TintMode::FixedSpruce
+                    } else if name == "minecraft:birch_leaves" {
+                        TintMode::FixedBirch
+                    } else if name == "minecraft:lily_pad" {
+                        TintMode::FixedLilyPad
+                    } else if name.contains("leaf_litter")
+                        || name.contains("dry_")
+                        || name.contains("wildflowers")
+                    {
                         TintMode::DryFoliage
                     } else if is_foliage {
                         TintMode::Foliage
@@ -378,7 +393,7 @@ fn scan_chunk_surface(
                 let b_intern = intern_biome_id(engine_biomes, raw_b, biome_table, biomes_dirty);
                 if let Some(wy) = water_y {
                     let depth = (wy - y).clamp(1, 255) as u8;
-                    let w_rgb = apply_biome_tint([152, 168, 204], TintMode::Water, bc, wx, wz);
+                    let w_rgb = apply_biome_tint([182, 198, 224], TintMode::Water, bc, wx, wz);
                     // Blend shallow shore riverbed tint slightly with water tint for crisp coastlines.
                     let bed = apply_biome_tint(look.rgb, look.tint, bc, wx, wz);
                     let w_mix = (f32::from(depth) * 0.14).clamp(0.50, 0.94);
@@ -416,7 +431,7 @@ fn scan_chunk_surface(
                 let raw_b = chunk.biome(lx, wy, lz);
                 let bc = biome_colors_of(engine_biomes, raw_b);
                 let b_intern = intern_biome_id(engine_biomes, raw_b, biome_table, biomes_dirty);
-                let rgb = apply_biome_tint([152, 168, 204], TintMode::Water, bc, wx, wz);
+                let rgb = apply_biome_tint([182, 198, 224], TintMode::Water, bc, wx, wz);
                 cells[idx] = ColumnCell {
                     rgb,
                     height: wy as i16,
@@ -454,15 +469,16 @@ fn scan_chunk_cave(
     let effective_top = (max_y - 1)
         .min(sections_top_y)
         .min(min_y + (col_top_sec + 1) * 16 - 1);
+    let allow_open_roof = cave_y >= min_y + 126;
     // If every non-air block is strictly below ceiling_y, open sky has no cave roof here.
-    if effective_top < ceiling_y {
+    if effective_top < ceiling_y && !allow_open_roof {
         return cells;
     }
     for lz in 0..16i32 {
         for lx in 0..16i32 {
-            let mut has_roof = false;
+            let mut has_roof = allow_open_roof;
             let mut ry = effective_top;
-            while ry >= ceiling_y {
+            while !has_roof && ry >= ceiling_y {
                 let sec_idx = ((ry - min_y) >> 4) as usize;
                 if let Some(sec) = chunk.sections.get(sec_idx)
                     && sec.is_uniform(air_id.0)
@@ -585,7 +601,7 @@ fn spawn_background_preload(
                             let look = looks.get(st_id.0 as usize).copied().unwrap_or_default();
                             let bc = biome_colors_of(&engine_biomes, surf.biome);
                             let rgb = if realistic_colors {
-                                let base = if is_water { [152, 168, 204] } else { look.rgb };
+                                let base = if is_water { [182, 198, 224] } else { look.rgb };
                                 let mode = if is_water { TintMode::Water } else { look.tint };
                                 apply_biome_tint(base, mode, bc, wx, wz)
                             } else {
@@ -684,6 +700,7 @@ pub fn on_extras_frame(game: &mut Game<'_>) {
     let dim_id = game.dim.id().to_owned();
 
     rt.frame_count = rt.frame_count.wrapping_add(1);
+    ICON_FRAME.store(rt.frame_count, Ordering::Relaxed);
     if rt.last_world_key != world_key || rt.last_dim_id != dim_id {
         if let Some(job) = rt.preload_job.take() {
             job.cancel.store(true, Ordering::Relaxed);
@@ -730,7 +747,15 @@ pub fn on_extras_frame(game: &mut Game<'_>) {
     };
 
     // Determine whether player stands under a ceiling (for CaveMode::Auto).
-    let mut under_roof = game.world.shape.has_ceiling;
+    // On the Nether roof (y >= min_y + 126), the player has open sky above them unless inside a roof build.
+    let on_nether_roof =
+        game.world.shape.has_ceiling && valid_player && py >= (game.world.shape.min_y as f64 + 126.0);
+    if rt.last_on_nether_roof != on_nether_roof {
+        rt.last_on_nether_roof = on_nether_roof;
+        rt.scanned_chunk_ptrs.clear();
+        rt.cave_scanned_ptrs.clear();
+    }
+    let mut under_roof = game.world.shape.has_ceiling && !on_nether_roof;
     if !under_roof && valid_player {
         let bx = px.floor() as i32;
         let bz = pz.floor() as i32;
@@ -890,6 +915,29 @@ pub fn on_extras_frame(game: &mut Game<'_>) {
             st.world_map_key = k;
         }
         st.terrain.frame_seq = st.terrain.frame_seq.wrapping_add(1);
+        if !st.terrain.world_key.is_empty()
+            && (st.terrain.world_key != world_key || st.terrain.dimension != dim_id)
+        {
+            let old_wkey = mod_eternity_world_map::sanitize_path_token(&st.terrain.world_key);
+            let old_dkey = mod_eternity_world_map::sanitize_path_token(&st.terrain.dimension);
+            let mut to_save = Vec::new();
+            for (&(rx, rz), reg) in st.terrain.regions.iter_mut() {
+                if reg.dirty_to_disk {
+                    reg.dirty_to_disk = false;
+                    to_save.push((
+                        format!("regions/{old_wkey}/{old_dkey}/r_{rx}_{rz}.bin"),
+                        reg.encode(),
+                    ));
+                }
+            }
+            st.pending_disk_writes.extend(to_save);
+            if st.biomes_dirty {
+                st.biomes_dirty = false;
+                let b_bytes = st.terrain.biomes.encode();
+                st.pending_disk_writes
+                    .push((format!("biomes/{old_wkey}.bin"), b_bytes));
+            }
+        }
         st.terrain.switch_world_dim(world_key.clone(), dim_id.clone());
         st.config.russian_lang = rt.russian_ui;
 
@@ -1059,7 +1107,7 @@ pub fn on_extras_frame(game: &mut Game<'_>) {
             .unwrap_or_else(|| game.res.biomes());
         let min_y = game.world.shape.min_y;
         let max_y = game.world.shape.max_y();
-        let has_ceiling = game.world.shape.has_ceiling;
+        let has_ceiling = game.world.shape.has_ceiling && !on_nether_roof;
         let air_id = game.world.air;
         let p_cx = floor_div(px.floor() as i32, 16);
         let p_cz = floor_div(pz.floor() as i32, 16);
@@ -1373,14 +1421,72 @@ fn draw_pixel_icon(batch: &mut HudBatch, atlas: &HudAtlas, x: f32, y: f32, px_si
     }
 }
 
-const SKULL_7X7: [&str; 7] = [
-    ".#####.",
-    "#######",
-    "#.#.#.#",
-    "#######",
-    ".#####.",
-    ".#.#.#.",
-    ".......",
+fn draw_styled_icon(
+    batch: &mut HudBatch,
+    atlas: &HudAtlas,
+    x: f32,
+    y: f32,
+    px_size: f32,
+    rows: &[&str],
+    primary: u32,
+    accent_a: u32,
+    accent_b: u32,
+    shadow: bool,
+) {
+    if shadow {
+        let sc = hud_color(0xA008080C);
+        for (ry, row) in rows.iter().enumerate() {
+            for (rx, ch) in row.chars().enumerate() {
+                if ch != '.' {
+                    batch.fill(
+                        atlas,
+                        x + (rx as f32) * px_size + 0.85,
+                        y + (ry as f32) * px_size + 0.85,
+                        px_size,
+                        px_size,
+                        sc,
+                    );
+                }
+            }
+        }
+    }
+    let c_pri = hud_color(primary);
+    let c_hi = hud_color(0xFFFFFFFF);
+    let c_dim = hud_color(0xFF9AA4B2);
+    let c_a = hud_color(accent_a);
+    let c_b = hud_color(accent_b);
+    for (ry, row) in rows.iter().enumerate() {
+        for (rx, ch) in row.chars().enumerate() {
+            let col = match ch {
+                '#' => c_pri,
+                '+' => c_hi,
+                '-' => c_dim,
+                'a' => c_a,
+                'b' => c_b,
+                _ => continue,
+            };
+            batch.fill(
+                atlas,
+                x + (rx as f32) * px_size,
+                y + (ry as f32) * px_size,
+                px_size,
+                px_size,
+                col,
+            );
+        }
+    }
+}
+
+const SKULL_9X9: [&str; 9] = [
+    "..+++++..",
+    ".+#####+.",
+    "+#######+",
+    "#..###..#",
+    "#..###..#",
+    ".###.###.",
+    "..#####..",
+    "..#.#.#..",
+    ".........",
 ];
 
 fn draw_waypoint_badge(
@@ -1398,14 +1504,31 @@ fn draw_waypoint_badge(
     let x = cx - half;
     let y = cy - half;
     let b = if rim_highlight { 0.7 } else if size <= 7.0 { 0.55 } else { 0.75 };
-    let b_col = if rim_highlight { 0xFFECECEC } else { 0xFF101010 };
+    let b_col = if rim_highlight {
+        0xFFECECEC
+    } else if is_death {
+        0xFFCC3344
+    } else {
+        0xFF101010
+    };
     batch.fill(atlas, x - b, y - b, size + b * 2.0, size + b * 2.0, hud_color(b_col));
-    batch.fill(atlas, x, y, size, size, hud_color(color_argb));
+    batch.fill(atlas, x, y, size, size, hud_color(if is_death { 0xFF1A1418 } else { color_argb }));
 
     if is_death {
-        let pad = (size * 0.12).max(0.8);
-        let px = (size - pad * 2.0) / 7.0;
-        draw_pixel_icon(batch, atlas, x + pad, y + pad, px, &SKULL_7X7, 0xFFFFFFFF, false);
+        let pad = (size * 0.08).max(0.6);
+        let px = (size - pad * 2.0) / 9.0;
+        draw_styled_icon(
+            batch,
+            atlas,
+            x + pad,
+            y + pad,
+            px,
+            &SKULL_9X9,
+            0xFFE8E4EC,
+            0xFFFF4D5E,
+            0xFF887E8C,
+            false,
+        );
     } else {
         let scale = (size / 11.4).clamp(0.56, 1.35);
         let tw = HudBatch::text_width(atlas, initial) * scale;
@@ -1525,6 +1648,334 @@ fn draw_mob_part(
     }
 }
 
+/// Canvas of composited mob icon texels in 1/16ths of the head box, spanning `-8..24` on both axes.
+const ICON_CANVAS: usize = 32;
+const ICON_ORIGIN: i32 = 8;
+
+struct CompositedIcon {
+    width16: u8,
+    height16: u8,
+    /// Row-major `ICON_CANVAS * ICON_CANVAS` ARGB colors (alpha 0 = empty).
+    cells: Vec<u32>,
+}
+
+struct IconCache {
+    revision: u64,
+    frame: u64,
+    built_this_frame: bool,
+    icons: HashMap<String, Option<CompositedIcon>>,
+}
+
+static ICON_CACHE: OnceLock<Mutex<IconCache>> = OnceLock::new();
+static ICON_FRAME: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+fn icon_cache() -> &'static Mutex<IconCache> {
+    ICON_CACHE.get_or_init(|| {
+        Mutex::new(IconCache {
+            revision: u64::MAX,
+            frame: 0,
+            built_this_frame: false,
+            icons: HashMap::new(),
+        })
+    })
+}
+
+/// Read one texel `(tx, ty)` of a `(tw, th)` texture packed at atlas rect `r`, as RGBA.
+fn atlas_texel(pixels: &[u8], atlas_w: u32, atlas_h: u32, r: Rect, tw: f32, th: f32, tx: f32, ty: f32) -> [u8; 4] {
+    let aw = atlas_w as f32;
+    let ah = atlas_h as f32;
+    let x0 = r.u0 * aw;
+    let y0 = r.v0 * ah;
+    let sw = (r.u1 - r.u0) * aw;
+    let sh = (r.v1 - r.v0) * ah;
+    let ax = (x0 + (tx + 0.5) * sw / tw).floor() as i64;
+    let ay = (y0 + (ty + 0.5) * sh / th).floor() as i64;
+    if ax < 0 || ay < 0 || ax >= i64::from(atlas_w) || ay >= i64::from(atlas_h) {
+        return [0, 0, 0, 0];
+    }
+    let idx = ((ay as usize) * (atlas_w as usize) + (ax as usize)) * 4;
+    match pixels.get(idx..idx + 4) {
+        Some(p) => [p[0], p[1], p[2], p[3]],
+        None => [0, 0, 0, 0],
+    }
+}
+
+/// Paint one textured layer (`src` texels `(px,py,pw,ph)` of a `(tw,th)` texture) into the canvas at
+/// head-box placement `(dx16, dy16, dw16, dh16)` using exact nearest-texel mapping.
+fn paint_icon_layer(
+    cells: &mut [u32],
+    pixels: &[u8],
+    atlas: &HudAtlas,
+    r: Rect,
+    tw: f32,
+    th: f32,
+    src: (u16, u16, u16, u16),
+    dst: (i32, i32, i32, i32),
+) {
+    let (px, py, pw, ph) = src;
+    let (dx, dy, dw, dh) = dst;
+    if pw == 0 || ph == 0 || dw <= 0 || dh <= 0 {
+        return;
+    }
+    for cy in 0..dh {
+        let gy = dy + cy + ICON_ORIGIN;
+        if gy < 0 || gy >= ICON_CANVAS as i32 {
+            continue;
+        }
+        let ty = f32::from(py) + ((cy as f32 + 0.5) * f32::from(ph) / dh as f32).floor();
+        for cx in 0..dw {
+            let gx = dx + cx + ICON_ORIGIN;
+            if gx < 0 || gx >= ICON_CANVAS as i32 {
+                continue;
+            }
+            let tx = f32::from(px) + ((cx as f32 + 0.5) * f32::from(pw) / dw as f32).floor();
+            let [cr, cg, cb, ca] = atlas_texel(pixels, atlas.width, atlas.height, r, tw, th, tx, ty);
+            if ca < 100 {
+                continue;
+            }
+            cells[(gy as usize) * ICON_CANVAS + gx as usize] =
+                0xFF00_0000 | (u32::from(cr) << 16) | (u32::from(cg) << 8) | u32::from(cb);
+        }
+    }
+}
+
+fn build_composited_icon(atlas: &HudAtlas, pixels: &[u8], ent: &RadarEntity) -> Option<CompositedIcon> {
+    let r = *atlas.sprites.get(ent.texture_key.as_str())?;
+    let actual_w = if r.w > 0 { r.w as u16 } else { 0 };
+    let actual_h = if r.h > 0 { r.h as u16 } else { 0 };
+    let spec = if ent.category == EntityCategory::Player {
+        mob_model_spec("player", 64, 64)
+    } else {
+        mob_model_spec(&ent.species_key, actual_w, actual_h)
+    };
+    let tw = if actual_w > 0 && actual_w == spec.base.tex_w {
+        f32::from(actual_w)
+    } else {
+        f32::from(spec.base.tex_w)
+    };
+    let th = if actual_h > 0 && actual_h == spec.base.tex_h {
+        f32::from(actual_h)
+    } else {
+        f32::from(spec.base.tex_h)
+    };
+    let mut cells = vec![0u32; ICON_CANVAS * ICON_CANVAS];
+
+    let paint_part = |cells: &mut Vec<u32>, part: &MobPart| {
+        let Some(src_r) = companion_sprite_rect(atlas, part.source, r) else {
+            return;
+        };
+        let (ptw, pth) = if part.source == OverlaySource::Same {
+            (tw, th)
+        } else {
+            (
+                if src_r.w > 0 { src_r.w as f32 } else { tw },
+                if src_r.h > 0 { src_r.h as f32 } else { th },
+            )
+        };
+        paint_icon_layer(
+            cells,
+            pixels,
+            atlas,
+            src_r,
+            ptw,
+            pth,
+            (part.px, part.py, part.pw, part.ph),
+            (
+                i32::from(part.dx16),
+                i32::from(part.dy16),
+                i32::from(part.dw16),
+                i32::from(part.dh16),
+            ),
+        );
+    };
+
+    for part in spec.active_parts().iter().filter(|p| p.behind_base) {
+        paint_part(&mut cells, part);
+    }
+    paint_icon_layer(
+        &mut cells,
+        pixels,
+        atlas,
+        r,
+        tw,
+        th,
+        (spec.base.px, spec.base.py, spec.base.pw, spec.base.ph),
+        (0, 0, 16, 16),
+    );
+    if let Some([hx0, hy0, hw, hh]) = spec.base.hat {
+        paint_icon_layer(&mut cells, pixels, atlas, r, tw, th, (hx0, hy0, hw, hh), (0, 0, 16, 16));
+    }
+    for part in spec.active_parts().iter().filter(|p| !p.behind_base) {
+        paint_part(&mut cells, part);
+    }
+
+    if cells.iter().all(|&c| c == 0) {
+        return None;
+    }
+    Some(CompositedIcon {
+        width16: spec.width16,
+        height16: spec.height16,
+        cells,
+    })
+}
+
+/// Draw a texel-exact mob/player head icon from the CPU-composited cache. Returns false when not ready.
+fn draw_composited_icon(
+    batch: &mut HudBatch,
+    atlas: &HudAtlas,
+    ent: &RadarEntity,
+    sx: f32,
+    sy: f32,
+    icon_size: f32,
+) -> bool {
+    if ent.texture_key.is_empty() {
+        return false;
+    }
+    let frame = ICON_FRAME.load(std::sync::atomic::Ordering::Relaxed);
+    let mut cache = icon_cache().lock().unwrap_or_else(|e| e.into_inner());
+    if cache.revision != atlas.revision {
+        cache.revision = atlas.revision;
+        cache.icons.clear();
+    }
+    if cache.frame != frame {
+        cache.frame = frame;
+        cache.built_this_frame = false;
+    }
+    let key = format!(
+        "{}|{}|{}",
+        ent.texture_key,
+        ent.species_key,
+        ent.category == EntityCategory::Player
+    );
+    if !cache.icons.contains_key(&key) {
+        // Build at most one new species icon per frame so atlas decompression never stacks up.
+        if cache.built_this_frame {
+            return false;
+        }
+        cache.built_this_frame = true;
+        let pixels = atlas.pixels();
+        let icon = build_composited_icon(atlas, &pixels, ent);
+        cache.icons.insert(key.clone(), icon);
+    }
+    let Some(Some(icon)) = cache.icons.get(&key) else {
+        return false;
+    };
+
+    let mw = icon_size * (f32::from(icon.width16) / 16.0);
+    let mh = icon_size * (f32::from(icon.height16) / 16.0);
+    let hx = sx - mw * 0.5;
+    let hy = sy - mh * 0.5;
+    let cw = mw / 16.0;
+    let ch = mh / 16.0;
+    let ox = hx - (ICON_ORIGIN as f32) * cw;
+    let oy = hy - (ICON_ORIGIN as f32) * ch;
+
+    // Soft drop shadow + crisp dark outline behind every opaque texel.
+    for gy in 0..ICON_CANVAS {
+        let row = &icon.cells[gy * ICON_CANVAS..(gy + 1) * ICON_CANVAS];
+        let mut gx = 0;
+        while gx < ICON_CANVAS {
+            if row[gx] == 0 {
+                gx += 1;
+                continue;
+            }
+            let start = gx;
+            while gx < ICON_CANVAS && row[gx] != 0 {
+                gx += 1;
+            }
+            let x = ox + start as f32 * cw;
+            let y = oy + gy as f32 * ch;
+            let w = (gx - start) as f32 * cw;
+            batch.fill(atlas, x + 0.35, y + 0.35, w, ch, hud_color(0x70080808));
+            batch.fill(atlas, x - 0.4, y - 0.4, w + 0.8, ch + 0.8, hud_color(0xDC101010));
+        }
+    }
+    // Merge horizontal runs of identical colors into single quads.
+    for gy in 0..ICON_CANVAS {
+        let row = &icon.cells[gy * ICON_CANVAS..(gy + 1) * ICON_CANVAS];
+        let mut gx = 0;
+        while gx < ICON_CANVAS {
+            let c = row[gx];
+            if c == 0 {
+                gx += 1;
+                continue;
+            }
+            let start = gx;
+            while gx < ICON_CANVAS && row[gx] == c {
+                gx += 1;
+            }
+            batch.fill(
+                atlas,
+                ox + start as f32 * cw,
+                oy + gy as f32 * ch,
+                (gx - start) as f32 * cw + 0.02,
+                ch + 0.02,
+                hud_color(c),
+            );
+        }
+    }
+    true
+}
+
+fn draw_pixel_mob_icon(
+    batch: &mut HudBatch,
+    atlas: &HudAtlas,
+    icon: &PixelMobIcon,
+    sx: f32,
+    sy: f32,
+    icon_size: f32,
+) {
+    let px = icon_size / 8.0;
+    let mw = f32::from(icon.w) * px;
+    let mh = f32::from(icon.h) * px;
+    let ox = sx - mw * 0.5;
+    let oy = sy - mh * 0.5;
+
+    // Soft drop shadow + crisp dark outline around opaque runs.
+    for (ry, row) in icon.rows.iter().enumerate() {
+        let bytes = row.as_bytes();
+        let mut rx = 0;
+        while rx < bytes.len() {
+            if bytes[rx] == b'.' {
+                rx += 1;
+                continue;
+            }
+            let start = rx;
+            while rx < bytes.len() && bytes[rx] != b'.' {
+                rx += 1;
+            }
+            let x = ox + start as f32 * px;
+            let y = oy + ry as f32 * px;
+            let w = (rx - start) as f32 * px;
+            batch.fill(atlas, x + 0.35, y + 0.35, w, px, hud_color(0x70080808));
+            batch.fill(atlas, x - 0.4, y - 0.4, w + 0.8, px + 0.8, hud_color(0xDC101010));
+        }
+    }
+    // Horizontal run-merged pixel quads for crisp, zero-sampling-loss rendering.
+    for (ry, row) in icon.rows.iter().enumerate() {
+        let bytes = row.as_bytes();
+        let mut rx = 0;
+        while rx < bytes.len() {
+            let Some(col) = icon.color_of(bytes[rx]) else {
+                rx += 1;
+                continue;
+            };
+            let start = rx;
+            while rx < bytes.len() && icon.color_of(bytes[rx]) == Some(col) {
+                rx += 1;
+            }
+            batch.fill(
+                atlas,
+                ox + start as f32 * px,
+                oy + ry as f32 * px,
+                (rx - start) as f32 * px + 0.02,
+                px + 0.02,
+                hud_color(col),
+            );
+        }
+    }
+}
+
 fn draw_entity_marker(
     batch: &mut HudBatch,
     atlas: &HudAtlas,
@@ -1549,8 +2000,36 @@ fn draw_entity_marker(
         return;
     }
 
-    // Tab mode: compact, crisp 2.5D layered mob head icons + player nickname!
+    // Tab mode: compact 2.5D mob head icons, hand-crafted pixel-art for most mobs and
+    // texel-exact texture compositing for squid/skeleton/chicken/pig/player.
     let icon_size = 5.0 * radius_scale.clamp(0.85, 1.12);
+
+    if ent.category == EntityCategory::Mob
+        && let Some(px_icon) = pixel_mob_icon(&ent.species_key)
+    {
+        draw_pixel_mob_icon(batch, atlas, &px_icon, sx, sy, icon_size);
+        return;
+    }
+
+    if matches!(ent.category, EntityCategory::Mob | EntityCategory::Player)
+        && draw_composited_icon(batch, atlas, ent, sx, sy, icon_size)
+    {
+        if ent.category == EntityCategory::Player && !ent.display_name.is_empty() {
+            let scale = 0.52;
+            let tw = HudBatch::text_width(atlas, &ent.display_name) * scale;
+            draw_text_scaled(
+                batch,
+                atlas,
+                &ent.display_name,
+                sx - tw * 0.5,
+                sy + icon_size * 0.5 + 1.0,
+                scale,
+                0xFFFFFFFF,
+                true,
+            );
+        }
+        return;
+    }
 
     match ent.category {
         EntityCategory::Player => {
@@ -2581,54 +3060,136 @@ fn draw_world_map(
     draw_active_panel(st, atlas, batch, &layout);
 }
 
-const GEAR_7X7: [&str; 7] = [
-    ".#.#.#.",
-    "..###..",
-    "###.###",
-    "#..#..#",
-    "###.###",
-    "..###..",
-    ".#.#.#.",
+const GEAR_9X9: [&str; 9] = [
+    "...+#+...",
+    ".+#---#+.",
+    ".+#####+.",
+    "###aaa###",
+    "+##aba##+",
+    "###aaa###",
+    ".-#####-.",
+    ".-#---#-.",
+    "...-#-...",
 ];
 
-const PRELOAD_7X7: [&str; 7] = [
-    ".#####.",
-    "#.....#",
-    "#.##...",
-    "#......",
-    "...##.#",
-    "#.....#",
-    ".#####.",
+const QUICK_WP_9X9: [&str; 9] = [
+    "...+.....",
+    "..+a+....",
+    ".+aaa+...",
+    "+aa#aa+..",
+    ".+aaa+b..",
+    "..+a+bbb.",
+    "...+..b..",
+    ".........",
+    ".........",
 ];
 
-const CAVE_7X7: [&str; 7] = [
-    "..###..",
-    ".#####.",
-    "##...##",
-    "#.....#",
-    "#.....#",
-    "#.....#",
-    "#######",
+const PRELOAD_9X9: [&str; 9] = [
+    "..+aaaa..",
+    ".+a....a.",
+    "a..+##...",
+    "a.#b..#..",
+    "a.#.b.#.a",
+    "..#..b#.a",
+    "...##+.a.",
+    ".a....a-.",
+    "..aaaa-..",
 ];
 
-const EXIT_7X7: [&str; 7] = [
-    "####...",
-    "#...#..",
-    "#.#.###",
-    "#..####",
-    "#.#.###",
-    "#...#..",
-    "####...",
+const WP_LIST_9X9: [&str; 9] = [
+    ".+++++++.",
+    ".+#####+.",
+    ".+#a###+.",
+    ".+#---#+.",
+    ".+#b###+.",
+    ".+#---#+.",
+    ".+#####+.",
+    ".+##.##+.",
+    ".+-...-+.",
 ];
 
-const FACE_7X7: [&str; 7] = [
-    "#######",
-    "#.....#",
-    "#.#.#.#",
-    "#.....#",
-    "#..#..#",
-    "#.#.#.#",
-    "#######",
+const CAVE_9X9: [&str; 9] = [
+    "..+++++..",
+    ".+#####+.",
+    "+##---##+",
+    "##..a..##",
+    "#..aba..#",
+    "#...a...#",
+    "#.......#",
+    "##-----##",
+    "#########",
+];
+
+const HELP_9X9: [&str; 9] = [
+    "..+aaa+..",
+    ".+a...a+.",
+    ".a.....a.",
+    ".....+a+.",
+    "....+a+..",
+    "....a....",
+    ".........",
+    "....b....",
+    ".........",
+];
+
+const EXIT_9X9: [&str; 9] = [
+    "+++++....",
+    "+---#....",
+    "+.#.#.a..",
+    "+.#..aaa.",
+    "+.#.aaaaa",
+    "+.#..aaa.",
+    "+.#.#.a..",
+    "+---#....",
+    "#####....",
+];
+
+const GRID_9X9: [&str; 9] = [
+    "aa#######",
+    "a.#..#..#",
+    "#########",
+    "#.#..#..#",
+    "#########",
+    "#.#..#..#",
+    "#########",
+    "#.#..#..a",
+    "#######aa",
+];
+
+const TARGET_9X9: [&str; 9] = [
+    "....a....",
+    "..++a++..",
+    ".+#...#+.",
+    ".#..b..#.",
+    "aa.bbb.aa",
+    ".#..b..#.",
+    ".+#...#+.",
+    "..--a--..",
+    "....a....",
+];
+
+const PIN_9X9: [&str; 9] = [
+    "..+aaa+..",
+    ".+aaaaa+.",
+    ".aaa+aaa.",
+    ".aaaaaaa.",
+    "..aaaaa..",
+    "...aaa...",
+    "....b....",
+    "....b....",
+    "...bbb...",
+];
+
+const RADAR_9X9: [&str; 9] = [
+    "....a....",
+    "...aaa...",
+    "..aa+aa..",
+    ".aa+b+aa.",
+    "aa+bbb+aa",
+    ".aa+b+aa.",
+    "..aa+aa..",
+    "...aaa...",
+    "....a....",
 ];
 
 fn draw_toolbar_buttons(
@@ -2649,28 +3210,37 @@ fn draw_toolbar_buttons(
             _ => true,
         };
         if hovered {
-            batch.fill(atlas, rect.x, rect.y, rect.w, rect.h, hud_color(0x90282828));
-            draw_rect_outline(batch, atlas, rect.x, rect.y, rect.w, rect.h, 1.0, 0xFF888888);
+            batch.fill(atlas, rect.x, rect.y, rect.w, rect.h, hud_color(0xA4202630));
+            draw_rect_outline(batch, atlas, rect.x, rect.y, rect.w, rect.h, 1.0, 0xFF7CC4FF);
         } else {
-            batch.fill(atlas, rect.x, rect.y, rect.w, rect.h, hud_color(0x55121212));
+            batch.fill(atlas, rect.x, rect.y, rect.w, rect.h, hud_color(0x66101318));
+            draw_rect_outline(batch, atlas, rect.x, rect.y, rect.w, rect.h, 1.0, 0x40FFFFFF);
         }
 
-        let col = if active_tint || hovered { 0xFFFFFFFF } else { 0xFF707070 };
-        let ix = rect.x + 3.0;
-        let iy = rect.y + 3.0;
+        let col = if active_tint || hovered { 0xFFECF2FA } else { 0xFF707884 };
+        let ix = rect.x + 2.8;
+        let iy = rect.y + 2.8;
+        let px = 1.6;
         match id {
-            MapButtonId::Settings => draw_pixel_icon(batch, atlas, ix, iy, 2.0, &GEAR_7X7, col, true),
-            MapButtonId::QuickWaypoint => {
-                draw_diamond(batch, atlas, rect.x + 10.0, rect.y + 10.0, 4.0, col, 0xFF101010);
-                batch.fill(atlas, rect.x + 13.0, rect.y + 13.0, 4.0, 1.5, hud_color(col));
-                batch.fill(atlas, rect.x + 14.2, rect.y + 11.8, 1.5, 4.0, hud_color(col));
+            MapButtonId::Settings => {
+                draw_styled_icon(batch, atlas, ix, iy, px, &GEAR_9X9, col, 0xFF55C8FF, 0xFFFFD866, true);
             }
-            MapButtonId::PreloadRegion => draw_pixel_icon(batch, atlas, ix, iy, 2.0, &PRELOAD_7X7, col, true),
+            MapButtonId::QuickWaypoint => {
+                draw_styled_icon(batch, atlas, ix, iy, px, &QUICK_WP_9X9, col, 0xFF66D9FF, 0xFF55EE88, true);
+            }
+            MapButtonId::PreloadRegion => {
+                draw_styled_icon(batch, atlas, ix, iy, px, &PRELOAD_9X9, col, 0xFF44D8C8, 0xFFFFDD66, true);
+            }
             MapButtonId::WaypointsList => {
-                draw_rect_outline(batch, atlas, rect.x + 4.0, rect.y + 4.0, 12.0, 12.0, 2.0, col);
+                draw_styled_icon(batch, atlas, ix, iy, px, &WP_LIST_9X9, col, 0xFFFF5566, 0xFFFFCC44, true);
             }
             MapButtonId::CaveMode => {
-                draw_pixel_icon(batch, atlas, ix, iy, 2.0, &CAVE_7X7, col, true);
+                let (acc_a, acc_b) = match st.config.cave_mode {
+                    CaveMode::Auto => (0xFF55C8FF, 0xFFB8ECFF),
+                    CaveMode::Manual => (0xFFFFCC44, 0xFFFFF0A8),
+                    CaveMode::Off => (0xFF606874, 0xFF78808C),
+                };
+                draw_styled_icon(batch, atlas, ix, iy, px, &CAVE_9X9, col, acc_a, acc_b, true);
                 let badge = match st.config.cave_mode {
                     CaveMode::Auto => Some(("A", 0xFF55C8FF)),
                     CaveMode::Manual => Some(("M", 0xFFFFCC44)),
@@ -2681,31 +3251,39 @@ fn draw_toolbar_buttons(
                 }
             }
             MapButtonId::HelpMenu => {
-                for r in 0..3 {
-                    batch.fill(atlas, rect.x + 4.0, rect.y + 5.0 + (r as f32) * 4.0, 12.0, 2.0, hud_color(col));
-                }
+                draw_styled_icon(batch, atlas, ix, iy, px, &HELP_9X9, col, 0xFFFFD466, 0xFF55C8FF, true);
             }
             MapButtonId::ZoomIn => {
                 batch.fill(atlas, rect.x + 5.0, rect.y + 9.0, 10.0, 2.0, hud_color(col));
                 batch.fill(atlas, rect.x + 9.0, rect.y + 5.0, 2.0, 10.0, hud_color(col));
+                batch.fill(atlas, rect.x + 9.0, rect.y + 9.0, 2.0, 2.0, hud_color(0xFF55E0AA));
             }
             MapButtonId::ZoomOut => {
                 batch.fill(atlas, rect.x + 5.0, rect.y + 9.0, 10.0, 2.0, hud_color(col));
+                batch.fill(atlas, rect.x + 9.0, rect.y + 9.0, 2.0, 2.0, hud_color(0xFFFF8866));
             }
             MapButtonId::ResetZoom => {
-                draw_text_scaled(batch, atlas, "1x", rect.x + 4.5, rect.y + 6.0, 0.95, col, true);
+                draw_text_scaled(batch, atlas, "1x", rect.x + 4.5, rect.y + 5.5, 0.95, col, true);
+                batch.fill(atlas, rect.x + 5.0, rect.y + 15.0, 10.0, 1.4, hud_color(0xFF55C8FF));
             }
-            MapButtonId::ExitMap => draw_pixel_icon(batch, atlas, ix, iy, 2.0, &EXIT_7X7, col, true),
+            MapButtonId::ExitMap => {
+                draw_styled_icon(batch, atlas, ix, iy, px, &EXIT_9X9, col, 0xFFFF6666, 0xFFFFAAAA, true);
+            }
             MapButtonId::ChunkGrid => {
-                draw_rect_outline(batch, atlas, rect.x + 4.0, rect.y + 4.0, 12.0, 12.0, 1.0, col);
-                batch.fill(atlas, rect.x + 9.5, rect.y + 4.0, 1.0, 12.0, hud_color(col));
-                batch.fill(atlas, rect.x + 4.0, rect.y + 9.5, 12.0, 1.0, hud_color(col));
+                let acc = if active_tint { 0xFF55E0AA } else { 0xFF68707C };
+                draw_styled_icon(batch, atlas, ix, iy, px, &GRID_9X9, col, acc, acc, true);
             }
-            MapButtonId::CenterPlayer => draw_pixel_icon(batch, atlas, ix, iy, 2.0, &FACE_7X7, col, true),
+            MapButtonId::CenterPlayer => {
+                let acc = if active_tint { 0xFFFF4D4D } else { 0xFF8892A0 };
+                draw_styled_icon(batch, atlas, ix, iy, px, &TARGET_9X9, col, acc, 0xFFFFFFFF, true);
+            }
             MapButtonId::ToggleWaypoints => {
-                batch.fill(atlas, rect.x + 5.0, rect.y + 5.0, 10.0, 10.0, hud_color(if active_tint { 0xFFD93B3B } else { 0xFF555555 }));
-                draw_rect_outline(batch, atlas, rect.x + 5.0, rect.y + 5.0, 10.0, 10.0, 1.0, col);
-                draw_text_scaled(batch, atlas, "W", rect.x + 7.2, rect.y + 7.2, 0.72, col, false);
+                let (acc_a, acc_b) = if active_tint {
+                    (0xFFE5484D, 0xFFFFCC55)
+                } else {
+                    (0xFF606874, 0xFF707884)
+                };
+                draw_styled_icon(batch, atlas, ix, iy, px, &PIN_9X9, col, acc_a, acc_b, true);
                 if !active_tint {
                     let uv = white_uv(atlas);
                     batch.quad(
@@ -2721,7 +3299,12 @@ fn draw_toolbar_buttons(
                 }
             }
             MapButtonId::ToggleEntities => {
-                draw_diamond(batch, atlas, rect.x + 10.0, rect.y + 10.0, 4.5, if active_tint { 0xFFFFEE44 } else { col }, 0xFF101010);
+                let (acc_a, acc_b) = if active_tint {
+                    (0xFFFFDD44, 0xFFFF7733)
+                } else {
+                    (0xFF606874, 0xFF707884)
+                };
+                draw_styled_icon(batch, atlas, ix, iy, px, &RADAR_9X9, col, acc_a, acc_b, true);
                 if !active_tint {
                     let uv = white_uv(atlas);
                     batch.quad(
