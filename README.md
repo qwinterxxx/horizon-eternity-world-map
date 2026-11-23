@@ -46,10 +46,10 @@ cargo test --lib
 horizon-launcher native-build --instance "<instance>" --trust-native-code
 ```
 
-Or download `eternity_world_map-0.1.1.hmod` from [Releases](https://github.com/qwinterxxx/horizon-eternity-world-map/releases) and verify its signature with [`horizon-mods.pub`](horizon-mods.pub):
+Or download `eternity_world_map-0.1.2.hmod` from [Releases](https://github.com/qwinterxxx/horizon-eternity-world-map/releases) and verify its signature with [`horizon-mods.pub`](horizon-mods.pub):
 
 ```sh
-minisign -Vm eternity_world_map-0.1.1.hmod -P RWQjqg8rypRO1FcAIBc+P7vxdFaU1fjCss8evaMaYSBDL21Fy12PGnH8
+minisign -Vm eternity_world_map-0.1.2.hmod -P RWQjqg8rypRO1FcAIBc+P7vxdFaU1fjCss8evaMaYSBDL21Fy12PGnH8
 ```
 
 ## License
